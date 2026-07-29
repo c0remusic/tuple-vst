@@ -158,18 +158,30 @@ en BSD, HarfBuzz, zlib, CHOC en ISC…). **Aucune dépendance LGPL ni GPL-seule.
 
 ## 5. Structure du projet
 
+**Trois couches**, dépendances pointant vers l'intérieur. Tranché le 2026-07-29.
+
 ```
 tuple-vst/
 ├── CMakeLists.txt          racine — PARTAGÉ
 ├── PRD.md · ARCHITECTURE.md   PARTAGÉS
 ├── source/
-│   ├── harmony/            ANTOINE — C++ pur, AUCUNE dépendance JUCE
-│   │   ├── ChordSpec.h/.cpp    hauteurs + rôles, sans octaves
+│   ├── domain/             ANTOINE — règles harmoniques, AUCUN JUCE
+│   │   ├── Key.h  Scale.h  Degree.h
+│   │   ├── ChordSpec.h/.cpp    hauteurs + RÔLES, sans octaves
+│   │   ├── VoicingFamily.h     les six familles
 │   │   ├── Voicing.h/.cpp      la couture : spec → notes
-│   │   └── VoiceLeading.h/.cpp mouvement entre accords
-│   ├── PluginProcessor.h/.cpp  thread audio, note-off garanti
-│   ├── PluginEditor.h/.cpp     UI — STÉPHANE
-│   └── Params.h                layout APVTS
+│   │   ├── VoiceLeading.h/.cpp mouvement entre accords
+│   │   └── NoteEvent.h
+│   ├── app/                ANTOINE — cas d'usage, AUCUN JUCE
+│   │   ├── BuildGrid.h/.cpp
+│   │   ├── PlayChord.h/.cpp
+│   │   └── ReleaseAll.h/.cpp
+│   └── plugin/             JUCE, adaptateurs compris
+│       ├── PluginProcessor.h/.cpp  thread audio, note-off garanti
+│       ├── PluginEditor.h/.cpp     UI — STÉPHANE
+│       ├── Params.h                layout APVTS
+│       ├── MidiEmitter.h/.cpp      NoteBatch → juce::MidiBuffer
+│       └── ParameterAdapter.h/.cpp APVTS → EngineSettings
 ├── fixtures/               ANTOINE SEUL — la spécification exécutable
 ├── tests/                  binaire de test, sans JUCE, boucle rapide
 ├── hosts/                  STÉPHANE — matrice DAW et guides de routage
@@ -177,9 +189,23 @@ tuple-vst/
 └── .github/workflows/      CI matrice Windows + macOS
 ```
 
-**`source/harmony/` ne compile pas contre JUCE.** C'est la règle qui garde la
-boucle de test rapide. Si un fichier de `harmony/` a besoin d'inclure un en-tête
-JUCE, c'est que la frontière a été franchie au mauvais endroit.
+**La règle qui tient tout : rien sous `plugin/` n'inclut un en-tête JUCE.**
+`domain/` et `app/` compilent seuls, et le binaire de test les compile tous les
+deux — il démarre en une seconde, sans hôte audio. Si un fichier de `domain/` ou
+`app/` a besoin d'inclure JUCE, c'est que la frontière a été franchie au mauvais
+endroit.
+
+**Pourquoi trois et pas quatre.** Une quatrième couche d'adaptateurs isolée
+n'achèterait rien ici : elle ne contiendrait que la traduction MIDI et la lecture
+des paramètres, deux briques intrinsèquement liées à JUCE dont **aucune n'aura
+jamais de seconde implémentation**. La règle de dépendance sert à pouvoir
+échanger une implémentation ; sans second candidat, le niveau supplémentaire est
+de la cérémonie. Les adaptateurs vivent donc dans `plugin/`.
+
+**Pourquoi pas une structure plate.** L'orchestration — relâcher l'accord
+précédent, émettre le nouveau au bon offset — finirait dans `processBlock`.
+C'est exactement l'endroit où se cache le bug de note-off, et il deviendrait
+intestable sans hôte. Or « aucune note bloquée » est une promesse produit.
 
 ---
 
@@ -201,6 +227,11 @@ module. Il n'y en a que six :
 | Openness | flottant | ouverture — contraint le moteur |
 | Density | flottant | densité — contraint le moteur |
 | Register | flottant | centre de placement — contraint le moteur |
+
+⚠️ **`register` est un mot réservé en C++.** L'identifiant de paramètre exposé au
+DAW est bien la chaîne `register`, mais le champ C++ correspondant s'appelle
+`centre` partout dans le code. Ne pas « corriger » cette différence : elle est
+délibérée, et renommer l'identifiant exposé casserait les projets sauvegardés.
 
 **L'accord joué n'est PAS un paramètre.** Il ne s'automatise pas depuis la
 timeline. Conséquence voulue : la grille reste un instrument, et sa taille n'est
@@ -315,9 +346,9 @@ la disjonction déclarée à l'avance.
 
 | zone | propriétaire |
 |---|---|
-| `source/harmony/`, `fixtures/`, `tests/` | Antoine — `fixtures/` est la spécification du produit |
-| `source/PluginEditor.*`, `hosts/`, CI | Stéphane |
-| `CMakeLists.txt`, `ARCHITECTURE.md`, `PRD.md`, `source/PluginProcessor.*` | **partagés** — modifiés sur `main`, en commit dédié |
+| `source/domain/`, `source/app/`, `fixtures/`, `tests/` | Antoine — `fixtures/` est la spécification du produit |
+| `source/plugin/PluginEditor.*`, `hosts/`, CI | Stéphane |
+| `CMakeLists.txt`, `ARCHITECTURE.md`, `PRD.md`, `source/plugin/PluginProcessor.*` | **partagés** — modifiés sur `main`, en commit dédié |
 
 Une PR touchant `fixtures/` ne se merge jamais sans revue d'Antoine.
 
