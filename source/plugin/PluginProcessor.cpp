@@ -10,7 +10,17 @@ TupleProcessor::TupleProcessor()
 {
 }
 
-TupleProcessor::~TupleProcessor() = default;
+TupleProcessor::~TupleProcessor()
+{
+    // Trigger 4 of 4 (ARCHITECTURE.md §6 invariant 3, Task 5): plugin
+    // destruction. There is no host MIDI buffer left to write into at this
+    // point — what IS guaranteed is that this object never claims a note is
+    // still sounding once it is gone. releaseAll()'s pure return value is
+    // what tests/noteoff_tests.cpp exercises for this exact trigger ("Trigger
+    // 4: destruction du plugin").
+    tuple::app::releaseAll (sounding, 0);
+    sounding.count = 0;
+}
 
 void TupleProcessor::prepareToPlay (double /*sampleRate*/, int /*samplesPerBlock*/)
 {
@@ -18,13 +28,45 @@ void TupleProcessor::prepareToPlay (double /*sampleRate*/, int /*samplesPerBlock
 
 void TupleProcessor::releaseResources()
 {
+    // Trigger 3 of 4 (ARCHITECTURE.md §6 invariant 3, Task 5).
+    tuple::app::releaseAll (sounding, 0);
+    sounding.count = 0;
 }
 
-void TupleProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midiMessages*/)
+void TupleProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
-    // Skeleton only: no chord logic yet (Task 5). Silence is the honest
-    // output of a plugin that produces MIDI, not audio.
+    // This device produces MIDI, not audio (Global Constraints: fake output
+    // bus only satisfies hosts that refuse a MIDI-only plugin).
     buffer.clear();
+
+    // Trigger 2 of 4 (ARCHITECTURE.md §6 invariant 3, Task 5): transport
+    // stop. Compared against the PREVIOUS block's state so this fires once,
+    // on the falling edge, not on every block the transport happens to be
+    // stopped.
+    bool isPlayingNow = false;
+    if (auto* currentPlayHead = getPlayHead())
+    {
+        if (const auto position = currentPlayHead->getPosition())
+            isPlayingNow = position->getIsPlaying();
+    }
+
+    // The mapping from incoming MIDI / mouse clicks to a ChordRequest
+    // (ARCHITECTURE.md §5 bis "Le declenchement") is not yet decided — Task 5
+    // wires only the note-off guarantee, not chord triggering. The incoming
+    // buffer is therefore not forwarded: only what THIS device itself
+    // produces (here, transport-stop releases) is written out.
+    juce::MidiBuffer outgoing;
+
+    if (wasPlaying && ! isPlayingNow && sounding.count > 0)
+    {
+        const auto offBatch = tuple::app::releaseAll (sounding, 0);
+        tuple::plugin::emit (offBatch, outgoing);
+        sounding.count = 0;
+    }
+
+    wasPlaying = isPlayingNow;
+
+    midiMessages.swapWith (outgoing);
 }
 
 juce::AudioProcessorEditor* TupleProcessor::createEditor()

@@ -2,13 +2,17 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include "../app/PlayChord.h"   // tuple::app::NoteBatch
+#include "../app/ReleaseAll.h"
+#include "MidiEmitter.h"
 #include "ParameterAdapter.h"
 #include "Params.h"
 
-// Thread-audio note: nothing in this class allocates, locks, or throws inside
-// processBlock() yet. Task 1 wires only the bare bus/format skeleton needed
-// for a host to load the plugin; the real audio-thread invariants (note-off
-// guarantees, fixed-size buffers) land in Task 5.
+// Thread-audio note: processBlock() below allocates nothing, locks nothing,
+// throws nothing, and does no I/O (Global Constraints, ARCHITECTURE.md §6).
+// `sounding` is the fixed-size audio-thread state Task 5 Step 6 asks for:
+// no std::vector, no heap, just a tuple::app::NoteBatch value living on this
+// object.
 class TupleProcessor : public juce::AudioProcessor
 {
 public:
@@ -44,5 +48,19 @@ public:
     juce::AudioProcessorValueTreeState apvts;
 
 private:
+    // The audio-thread's fixed-size record of what is currently sounding
+    // (Task 5, Global Constraints "buffers de taille fixe alloues dans
+    // prepareToPlay" — trivially satisfied here since the type has no heap
+    // storage to begin with). Read and written only from processBlock(),
+    // releaseResources(), and the destructor — the three plugin-layer sites
+    // of the four note-off triggers (the fourth, chord change, is playChord's
+    // own job and does not need a separate site here).
+    tuple::app::NoteBatch sounding {};
+
+    // Tracked so processBlock() can detect the transport EDGE (was playing,
+    // now stopped) rather than releasing every block the transport happens
+    // to be stopped — see processBlock()'s definition.
+    bool wasPlaying = false;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TupleProcessor)
 };

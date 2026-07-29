@@ -83,6 +83,9 @@ target_sources(TupleVST PRIVATE
     source/plugin/PluginProcessor.cpp
     source/plugin/PluginEditor.cpp
     source/plugin/ParameterAdapter.cpp
+    source/plugin/MidiEmitter.cpp
+    source/app/PlayChord.cpp
+    source/app/ReleaseAll.cpp
 )
 
 target_include_directories(TupleVST PRIVATE source/plugin)
@@ -182,6 +185,30 @@ target_link_libraries(ParamsTests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags
 )
+
+# --- Note-off invariant + MidiEmitter test binary (Task 5) ------------------
+# domain/ + app/ stay fast and JUCE-free (ARCHITECTURE.md §1); the dedicated
+# MidiEmitter offset test is the one part of this binary that needs a JUCE
+# module (juce_audio_basics, for juce::MidiBuffer) — plugin/ is where a JUCE
+# type is allowed to appear, and this test binary exercises that boundary
+# directly.
+add_executable(NoteoffTests
+    tests/noteoff_tests.cpp
+    source/domain/ChordSpec.cpp
+    source/domain/Voicing.cpp
+    source/app/PlayChord.cpp
+    source/app/ReleaseAll.cpp
+    source/plugin/MidiEmitter.cpp
+)
+target_include_directories(NoteoffTests PRIVATE source/domain source/app source/plugin)
+target_compile_features(NoteoffTests PRIVATE cxx_std_17)
+target_compile_definitions(NoteoffTests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_MP3AUDIOFORMAT=0)
+target_link_libraries(NoteoffTests PRIVATE
+    juce::juce_audio_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
 
 if(TUPLE_BUILD_PROOF_HOSTS AND WIN32)
     juce_add_console_app(TupleVST3HostSmoke
