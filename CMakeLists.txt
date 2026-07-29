@@ -133,6 +133,18 @@ clap_juce_extensions_plugin(TARGET TupleVST
 # clap_host_smoke.cpp swapped for dlopen/dlsym when a Mac is available.
 option(TUPLE_BUILD_PROOF_HOSTS "Build the Task-1-Step-5 host-loading smoke tests" ON)
 
+# --- Domain test binary (Task 2) --------------------------------------------
+# No JUCE dependency, no link against TupleVST: this is the fast loop
+# ARCHITECTURE.md §1 describes ("demarre en une seconde, sans hote audio").
+# Only source/domain/*.cpp is compiled in, so it also proves the domain layer
+# builds standalone (Task 2 Step 5).
+add_executable(DomainTests
+    tests/domain_tests.cpp
+    source/domain/ChordSpec.cpp
+)
+target_include_directories(DomainTests PRIVATE source/domain)
+target_compile_features(DomainTests PRIVATE cxx_std_17)
+
 if(TUPLE_BUILD_PROOF_HOSTS AND WIN32)
     juce_add_console_app(TupleVST3HostSmoke
         PRODUCT_NAME "TupleVST3HostSmoke"
