@@ -12,6 +12,21 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(TUPLE_RTSAN "Build with RealtimeSanitizer (-fsanitize=realtime)" OFF)
 
 # --- JUCE, pinned tag, never a floating branch ------------------------------
+# Licence: JUCE is dual-licensed by Raw Material Software — commercial, or
+# AGPLv3 (verified on-disk: every vendored JUCE header carries both terms
+# verbatim, e.g. modules/juce_audio_processors_headless/format/
+# juce_PluginFormatDefs.h after FetchContent runs; canonical text at
+# https://juce.com/legal/juce-9-licence/). AGPLv3 is copyleft, so Global
+# Constraints ("aucune dependance copyleft") rules it out — this project is
+# under the commercial licence, Starter tier, whose criterion (Raw Material
+# Software EULA) is "revenue or funding received by the entity and its
+# affiliates, from all sources, over the trailing 12 months <= $20,000". See
+# THIRD-PARTY-LICENSES.md for the full record and the re-verification trigger,
+# and ARCHITECTURE.md Section 3 for the tier table and pitfalls. Holding the
+# actual Starter seat (an account with Raw Material Software) is a business
+# action taken outside this repository, not a file this CMakeLists.txt can
+# produce — this comment documents the applicable terms and where to recheck
+# them, not a substitute for that registration.
 include(FetchContent)
 
 FetchContent_Declare(JUCE
@@ -26,9 +41,12 @@ FetchContent_MakeAvailable(JUCE)
 # repo). Pinned to a commit SHA rather than the latest tag: the newest tagged
 # release (0.26.0) predates JUCE 9 by three years and does not build against
 # it. JUCE 9 support landed on `main` in commit 26bab6be ("JUCE 9 support
-# (#178)") and has not been tagged upstream yet. The SHA below is that same
-# commit (HEAD of `main` as of 2026-07-29) — an immutable commit reference,
-# not a moving branch name, so it still satisfies "no floating branch".
+# (#178)", 2026-07-21). The SHA below, 54b3c326, is NOT that same commit: it
+# is the one commit directly after it ("Fix null termination of CLAP metadata
+# strings (#179)"), confirmed via the GitHub compare API on 2026-07-29
+# (26bab6be...54b3c326 -> ahead_by: 1, one commit). It still satisfies "pinned
+# commit, not a floating branch" — 26bab6be (the JUCE 9 support commit) is
+# included as its direct ancestor either way.
 set(CLAP_JUCE_EXTENSIONS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(clap_juce_extensions
     GIT_REPOSITORY https://github.com/free-audio/clap-juce-extensions.git
@@ -104,3 +122,38 @@ clap_juce_extensions_plugin(TARGET TupleVST
     CLAP_ID "live.tuple.chords"
     CLAP_FEATURES instrument
 )
+
+# --- Proof-only host smoke tests (Task 1, Step 5) ---------------------------
+# tools/proof_hosts/ is NOT the plugin: it is outside the domain/app/plugin
+# architecture, never linked into the .vst3/.clap, and exists solely to prove
+# "loads in a real host, doesn't crash" with something stronger than
+# `dumpbin -exports`. See proof/task1-build.md and the .cpp files themselves.
+# Windows-only for now (both smoke tests currently rely on Win32 APIs); a
+# macOS pass needs the LoadLibrary/GetProcAddress calls in
+# clap_host_smoke.cpp swapped for dlopen/dlsym when a Mac is available.
+option(TUPLE_BUILD_PROOF_HOSTS "Build the Task-1-Step-5 host-loading smoke tests" ON)
+
+if(TUPLE_BUILD_PROOF_HOSTS AND WIN32)
+    juce_add_console_app(TupleVST3HostSmoke
+        PRODUCT_NAME "TupleVST3HostSmoke"
+    )
+    target_sources(TupleVST3HostSmoke PRIVATE tools/proof_hosts/vst3_host_smoke.cpp)
+    target_compile_definitions(TupleVST3HostSmoke PRIVATE
+        JUCE_PLUGINHOST_VST3=1
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_MP3AUDIOFORMAT=0
+    )
+    target_link_libraries(TupleVST3HostSmoke PRIVATE
+        juce::juce_audio_processors
+        juce::juce_audio_basics
+        juce::juce_events
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+    )
+
+    add_executable(TupleClapHostSmoke tools/proof_hosts/clap_host_smoke.cpp)
+    target_include_directories(TupleClapHostSmoke PRIVATE
+        ${clap_juce_extensions_SOURCE_DIR}/clap-libs/clap/include
+    )
+    target_compile_features(TupleClapHostSmoke PRIVATE cxx_std_17)
+endif()
