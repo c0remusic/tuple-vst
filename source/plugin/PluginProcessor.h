@@ -62,5 +62,17 @@ private:
     // to be stopped — see processBlock()'s definition.
     bool wasPlaying = false;
 
+    // processBlock()'s own outgoing-MIDI scratch buffer. A local
+    // juce::MidiBuffer built fresh every processBlock() call starts at
+    // capacity 0, so its first addEvent() (inside MidiEmitter's emit())
+    // reallocates on the audio thread — exactly the "buffers de taille fixe
+    // alloués dans prepareToPlay" violation this member exists to close.
+    // prepareToPlay() reserves its storage once, off the audio thread;
+    // processBlock() only ever clear()s it (Array::clearQuick(), keeps the
+    // allocated storage per juce_Array.h) and refills it, then hands it to
+    // the host via swapWith(). See PluginProcessor.cpp for the reserve size
+    // and the caveat about what swapWith does to that capacity afterwards.
+    juce::MidiBuffer outgoingBuffer;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TupleProcessor)
 };

@@ -1,6 +1,19 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+namespace {
+
+// juce_MidiBuffer.cpp's addEvent() stores each event as int32 sampleNumber +
+// uint16 dataSize + the raw MIDI bytes (4 + 2 + N). Every event this plugin
+// emits is a 3-byte note-on/note-off, i.e. 9 bytes/event; round up with
+// headroom so this stays correct even if the MIDI messages emitted here ever
+// grow past 3 raw bytes.
+constexpr size_t kBytesPerNoteEvent = 16;
+constexpr size_t kOutgoingBufferReserveBytes =
+    (size_t) tuple::app::kMaxNoteBatch * kBytesPerNoteEvent;
+
+} // namespace
+
 // The fake output bus is not decorative: Live and Cakewalk refuse to load a
 // MIDI-only plugin at all. See Global Constraints > "Contraintes d'hôte".
 TupleProcessor::TupleProcessor()
@@ -14,22 +27,31 @@ TupleProcessor::~TupleProcessor()
 {
     // Trigger 4 of 4 (ARCHITECTURE.md §6 invariant 3, Task 5): plugin
     // destruction. There is no host MIDI buffer left to write into at this
-    // point — what IS guaranteed is that this object never claims a note is
-    // still sounding once it is gone. releaseAll()'s pure return value is
-    // what tests/noteoff_tests.cpp exercises for this exact trigger ("Trigger
-    // 4: destruction du plugin").
-    tuple::app::releaseAll (sounding, 0);
+    // point, so no note-off is actually emitted here — calling releaseAll()
+    // and discarding its result would do nothing beyond what the assignment
+    // below already does. What this site guarantees is that the object
+    // never claims a note is still sounding once it is gone. The trigger's
+    // note-off ACCOUNTING is what tests/noteoff_tests.cpp exercises, by
+    // calling the pure releaseAll() directly with fabricated state ("Trigger
+    // 4: destruction du plugin") — that test does not, and cannot, invoke
+    // this destructor.
     sounding.count = 0;
 }
 
 void TupleProcessor::prepareToPlay (double /*sampleRate*/, int /*samplesPerBlock*/)
 {
+    // Global Constraints "buffers de taille fixe alloués dans prepareToPlay":
+    // reserve processBlock()'s outgoing-MIDI scratch buffer here, once, off
+    // the audio thread, so its addEvent() calls never grow it.
+    outgoingBuffer.ensureSize (kOutgoingBufferReserveBytes);
 }
 
 void TupleProcessor::releaseResources()
 {
-    // Trigger 3 of 4 (ARCHITECTURE.md §6 invariant 3, Task 5).
-    tuple::app::releaseAll (sounding, 0);
+    // Trigger 3 of 4 (ARCHITECTURE.md §6 invariant 3, Task 5). Same rationale
+    // as ~TupleProcessor() above: no host MIDI buffer exists at this call
+    // site, so there is nothing for releaseAll() to hand off to — clearing
+    // the count is the entire effect.
     sounding.count = 0;
 }
 
@@ -55,18 +77,45 @@ void TupleProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     // wires only the note-off guarantee, not chord triggering. The incoming
     // buffer is therefore not forwarded: only what THIS device itself
     // produces (here, transport-stop releases) is written out.
-    juce::MidiBuffer outgoing;
+    //
+    // outgoingBuffer is NOT rebuilt here: it is the fixed-size member
+    // reserved once in prepareToPlay() (Global Constraints, see its
+    // declaration in PluginProcessor.h). clear() is Array::clearQuick() —
+    // it resets the event count without freeing the reserved storage, so
+    // the emit() call below never reallocates. Caveat, named rather than
+    // hidden: swapWith() at the end of this function exchanges storage with
+    // the host's midiMessages buffer, so from the NEXT block on this member
+    // holds whatever capacity that buffer had — prepareToPlay()'s reserve
+    // only strictly guarantees the first block after it runs. Closing that
+    // gap fully would mean never handing our storage to the host at all,
+    // which is a larger redesign than this correction's scope; the actual
+    // proof point for zero-allocation, per Global Constraints, is
+    // RealtimeSanitizer, not this comment.
+    outgoingBuffer.clear();
 
     if (wasPlaying && ! isPlayingNow && sounding.count > 0)
     {
-        const auto offBatch = tuple::app::releaseAll (sounding, 0);
-        tuple::plugin::emit (offBatch, outgoing);
-        sounding.count = 0;
+        // Global Constraints: "notes placées à leur offset d'échantillon
+        // exact, jamais à 0". This trigger has no per-note timing of its own
+        // to place events at (unlike a chord change driven by an incoming
+        // MIDI event's own offset) — but it does have this block's actual
+        // sample count, and the LAST valid sample in it is the latest, most
+        // conservative real offset available: it defers the release for as
+        // long as this callback allows, rather than defaulting to the start.
+        // A zero-length block has no valid sample offset at all, so it
+        // emits nothing rather than fabricating one.
+        if (buffer.getNumSamples() > 0)
+        {
+            const auto offSample = buffer.getNumSamples() - 1;
+            const auto offBatch = tuple::app::releaseAll (sounding, offSample);
+            tuple::plugin::emit (offBatch, outgoingBuffer);
+            sounding.count = 0;
+        }
     }
 
     wasPlaying = isPlayingNow;
 
-    midiMessages.swapWith (outgoing);
+    midiMessages.swapWith (outgoingBuffer);
 }
 
 juce::AudioProcessorEditor* TupleProcessor::createEditor()
