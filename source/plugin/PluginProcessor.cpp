@@ -196,8 +196,31 @@ void TupleProcessor::getStateInformation (juce::MemoryBlock& destData)
 void TupleProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
+    {
         if (xml->hasTagName (apvts.state.getType()))
+        {
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
+
+            // apvts.replaceState() above changes each parameter's live value
+            // directly, but does NOT notify the host — that is a SEPARATE
+            // step, updateHostDisplay(), that every host-format wrapper
+            // (VST3, CLAP via clap-juce-extensions) listens for through
+            // juce::AudioProcessorListener::audioProcessorChanged() before it
+            // will re-read parameter values on its own. Without this call,
+            // a host that reloads a saved session (recreate the plugin,
+            // setStateInformation with the old session data) ends up with
+            // stale parameter values in its own UI/automation lanes even
+            // though this processor's own apvts is correct — exactly the
+            // clap-validator state-reproducibility-{basic,binary,buffered}
+            // failure recorded in proof/task7-ci.md Step 4 ("these parameter
+            // values changed without a rescan request"). programChanged is
+            // the flag clap-juce-extensions' wrapper treats as "a preset was
+            // loaded, rescan parameter VALUES" (see its audioProcessorChanged
+            // override) — the correct, minimal flag here, since only VALUES
+            // changed, not the parameters' names/ranges/count.
+            updateHostDisplay (juce::AudioProcessor::ChangeDetails{}.withProgramChanged (true));
+        }
+    }
 }
 
 // This factory is the one symbol every JUCE plugin format wrapper (VST3,

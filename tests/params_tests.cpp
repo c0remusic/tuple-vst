@@ -120,9 +120,19 @@ public:
 
     void setStateInformation (const void* data, int sizeInBytes) override
     {
+        // Mirrors TupleProcessor::setStateInformation() (source/plugin/
+        // PluginProcessor.cpp) exactly, including the updateHostDisplay()
+        // call — this test binary duplicates the production body rather than
+        // linking PluginProcessor.cpp/PluginEditor.h (see this file's header
+        // comment on why), so the mirror has to be kept in sync by hand.
         if (auto xml = getXmlFromBinary (data, sizeInBytes))
+        {
             if (xml->hasTagName (apvts.state.getType()))
+            {
                 apvts.replaceState (juce::ValueTree::fromXml (*xml));
+                updateHostDisplay (juce::AudioProcessor::ChangeDetails{}.withProgramChanged (true));
+            }
+        }
     }
 
     juce::AudioProcessorValueTreeState apvts;
@@ -136,6 +146,34 @@ void setParam (juce::AudioProcessorValueTreeState& apvts, const char* paramID, V
     if (param != nullptr)
         *param = value;
 }
+
+// clap-validator's state-reproducibility tests (proof/task7-ci.md Step 4) fail
+// not because a value fails to round-trip through getStateInformation() /
+// setStateInformation() (Step 4 above already proves that leg), but because
+// NOTHING on the JUCE side ever tells the host "some parameter values changed
+// on their own, please re-read them" after a state load. clap-juce-extensions'
+// CLAP wrapper (fetched by CMakeLists.txt, not vendored in this repo) only
+// calls host.paramsRescan(CLAP_PARAM_RESCAN_VALUES) from its own
+// audioProcessorChanged(processor, details) override, in response to
+// details.programChanged or details.parameterInfoChanged — and that override
+// only ever runs if something calls juce::AudioProcessor::updateHostDisplay().
+// A plain juce::AudioProcessorListener sees exactly the same signal the CLAP
+// (and VST3) wrapper does, so it reproduces the missing-notification defect
+// without needing a CLAP host at all.
+class RecordingListener : public juce::AudioProcessorListener
+{
+public:
+    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {}
+
+    void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails& details) override
+    {
+        sawChange = true;
+        sawRescanWorthyChange |= (details.programChanged || details.parameterInfoChanged);
+    }
+
+    bool sawChange = false;
+    bool sawRescanWorthyChange = false;
+};
 
 } // namespace
 
@@ -228,6 +266,110 @@ int main()
         // And the values are the non-default ones actually set above, not a
         // coincidental match against two freshly-defaulted processors.
         expectEqualInt (after.key, 7, "persisted key is the non-default value that was set, not the default");
+    }
+
+    // --- Step 5: clap-validator repro (proof/task7-ci.md Step 4,
+    //     state-reproducibility-{basic,binary,buffered}) -- randomize *all*
+    //     six parameters with non-default values (juce::Random, fixed seed so
+    //     this stays deterministic across runs/CI), save state, recreate the
+    //     processor from scratch (a fresh object, not the same one reused —
+    //     matches clap-validator's "recreates the plugin instance" step and
+    //     Step 4's own already-independent `destination`), reload, and check
+    //     TWO separate things a real host cares about:
+    //       (a) the reloaded values actually equal the randomized ones (the
+    //           plain data round-trip -- expected to already hold, per Step 4);
+    //       (b) the host was TOLD that its parameters changed, via the same
+    //           juce::AudioProcessorListener::audioProcessorChanged signal the
+    //           CLAP (and VST3) wrapper listens to -- this is the part
+    //           clap-validator flags as "these parameter values changed
+    //           without a rescan request", and (a) passing while (b) fails is
+    //           exactly the false-assurance bug the old Step 4 test alone
+    //           could not see (it never re-created+reloaded through a listener
+    //           at all, so a silent replaceState() looked identical to a
+    //           correctly-announced one).
+    {
+        juce::Random rng (0x7 + 0xC0FFEE); // fixed seed: deterministic, not time-based
+
+        // Rejection-sample the int draws against their default: a fixed seed
+        // that happened to land exactly on a default value would silently
+        // stop exercising the bug for that one parameter (this is not
+        // hypothetical -- the first seed tried here did exactly that for key
+        // and octave, both of which default to 0).
+        auto nextNonDefaultInt = [&] (int lo, int hi, int defaultValue)
+        {
+            for (;;)
+            {
+                const int candidate = rng.nextInt ({ lo, hi + 1 });
+                if (candidate != defaultValue)
+                    return candidate;
+            }
+        };
+        auto nextNonDefaultFloat = [&] (float lo, float hi, float defaultValue)
+        {
+            for (;;)
+            {
+                const float candidate = lo + rng.nextFloat() * (hi - lo);
+                if (candidate != defaultValue)
+                    return candidate;
+            }
+        };
+
+        const int   randKey      = nextNonDefaultInt (tuple::plugin::kKeyMin, tuple::plugin::kKeyMax, tuple::plugin::kKeyDefault);
+        const int   randScale    = nextNonDefaultInt (tuple::plugin::kScaleMin, tuple::plugin::kScaleMax, tuple::plugin::kScaleDefault);
+        const int   randOctave   = nextNonDefaultInt (tuple::plugin::kOctaveMin, tuple::plugin::kOctaveMax, tuple::plugin::kOctaveDefault);
+        const float randOpenness = nextNonDefaultFloat (tuple::plugin::kOpennessMin, tuple::plugin::kOpennessMax, tuple::plugin::kOpennessDefault);
+        const float randDensity  = nextNonDefaultFloat (tuple::plugin::kDensityMin, tuple::plugin::kDensityMax, tuple::plugin::kDensityDefault);
+        const float randRegister = nextNonDefaultFloat (tuple::plugin::kRegisterMin, tuple::plugin::kRegisterMax, tuple::plugin::kRegisterDefault);
+
+        // Every randomized draw must actually be non-default, or this test
+        // would silently stop exercising the bug on an unlucky seed.
+        expectTrue (randKey != tuple::plugin::kKeyDefault, "Step 5 fixture: randomized key is non-default");
+        expectTrue (randScale != tuple::plugin::kScaleDefault, "Step 5 fixture: randomized scale is non-default");
+        expectTrue (randOctave != tuple::plugin::kOctaveDefault, "Step 5 fixture: randomized octave is non-default");
+        expectTrue (randOpenness != tuple::plugin::kOpennessDefault, "Step 5 fixture: randomized openness is non-default");
+        expectTrue (randDensity != tuple::plugin::kDensityDefault, "Step 5 fixture: randomized density is non-default");
+        expectTrue (randRegister != tuple::plugin::kRegisterDefault, "Step 5 fixture: randomized register is non-default");
+
+        TestHostProcessor source;
+        setParam<juce::AudioParameterInt>   (source.apvts, tuple::plugin::kKeyParamID,      randKey);
+        setParam<juce::AudioParameterInt>   (source.apvts, tuple::plugin::kScaleParamID,    randScale);
+        setParam<juce::AudioParameterInt>   (source.apvts, tuple::plugin::kOctaveParamID,   randOctave);
+        setParam<juce::AudioParameterFloat> (source.apvts, tuple::plugin::kOpennessParamID, randOpenness);
+        setParam<juce::AudioParameterFloat> (source.apvts, tuple::plugin::kDensityParamID,  randDensity);
+        setParam<juce::AudioParameterFloat> (source.apvts, tuple::plugin::kRegisterParamID, randRegister);
+
+        juce::MemoryBlock saved;
+        source.getStateInformation (saved);
+
+        // Recreate: a brand-new processor, not the one that was randomized —
+        // this is the "recreates the plugin instance" step clap-validator
+        // performs before reloading.
+        auto destination = std::make_unique<TestHostProcessor>();
+
+        RecordingListener listener;
+        destination->addListener (&listener);
+
+        destination->setStateInformation (saved.getData(), (int) saved.getSize());
+
+        destination->removeListener (&listener);
+
+        auto after = readSettings (destination->apvts);
+
+        // (a) the data itself round-tripped correctly.
+        expectEqualInt (after.key, randKey, "Step 5: randomized key survives recreate+reload");
+        expectEqualInt (after.scaleIndex, randScale, "Step 5: randomized scale survives recreate+reload");
+        expectEqualInt (after.octave, randOctave, "Step 5: randomized octave survives recreate+reload");
+        expectEqualFloat (after.openness, randOpenness, "Step 5: randomized openness survives recreate+reload");
+        expectEqualFloat (after.density, randDensity, "Step 5: randomized density survives recreate+reload");
+        expectEqualInt (after.centre, (long long) juce::roundToInt (randRegister),
+                         "Step 5: randomized register survives recreate+reload");
+
+        // (b) the host actually got told. This is the clap-validator failure:
+        // "After reloading the state, these parameter values changed without
+        // a rescan request" -- i.e. (a) is true but (b) is false.
+        expectTrue (listener.sawRescanWorthyChange,
+                    "Step 5: setStateInformation() notifies the host (programChanged/parameterInfoChanged) "
+                    "when it changes parameter values, so a CLAP/VST3 host knows to rescan them");
     }
 
     if (failures == 0)
