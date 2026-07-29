@@ -12,6 +12,7 @@
 
 #include "../source/app/PlayChord.h"
 #include "../source/app/ReleaseAll.h"
+#include "../source/app/TransportStop.h"
 #include "../source/domain/ChordSpec.h"
 #include "../source/domain/VoicingFamily.h"
 #include "../source/plugin/MidiEmitter.h"
@@ -24,6 +25,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 using tuple::app::ChordRequest;
+using tuple::app::decideTransportStop;
 using tuple::app::kDefaultVelocity;
 using tuple::app::NoteBatch;
 using tuple::app::playChord;
@@ -175,6 +177,72 @@ int main()
 
         expectTrue (tracker.allReleased(),
                     "Trigger 2 (arret du transport): releaseAll() on transport stop clears every sounding note-on");
+    }
+
+    // --- Regression: front descendant sur un bloc de 0 echantillon --------
+    // A zero-sample processBlock() call landing EXACTLY on the transport's
+    // falling edge has no valid sample to place a note-off at. The bug: the
+    // old inline logic in processBlock() advanced wasPlaying unconditionally
+    // regardless of whether the release actually happened, which erased the
+    // edge forever -- "wasPlaying && !isPlayingNow" could never fire again
+    // for that stop, so the note-off was LOST, not delayed. This exercises
+    // decideTransportStop() directly (extracted so this is testable without
+    // a JUCE host), across three simulated blocks: playing with notes
+    // sounding -> a 0-sample block at the falling edge -> a normal block
+    // still stopped.
+    {
+        NoteOffTracker tracker;
+        auto soundingB = primeChordBSounding (tracker);
+        bool wasPlaying = true; // matches the state primeChordBSounding leaves the transport in
+
+        // Block N: transport just stopped, but the host hands us an EMPTY
+        // buffer. No valid sample offset exists -- nothing may be emitted.
+        auto firstEdge = decideTransportStop (wasPlaying, /*isPlayingNow*/ false, soundingB.count, /*numSamples*/ 0);
+        expectTrue (! firstEdge.shouldRelease,
+                    "regression: a 0-sample block at the falling edge must not attempt a release");
+        expectTrue (! firstEdge.advanceWasPlaying,
+                    "regression: a 0-sample block at the falling edge must NOT consume it (fix: stay armed)");
+        if (firstEdge.advanceWasPlaying)
+            wasPlaying = false; // faithfully replays what processBlock() does with the decision
+
+        // Block N+1: still stopped, this time with a normal buffer. If the
+        // edge survived (the fix), it must fire here -- this is the ONLY
+        // chance left to release chordB's notes.
+        constexpr int kNumSamples = 512;
+        auto secondEdge = decideTransportStop (wasPlaying, /*isPlayingNow*/ false, soundingB.count, kNumSamples);
+        expectTrue (secondEdge.shouldRelease,
+                    "regression: the falling edge must still be armed on the next block and fire there");
+
+        if (secondEdge.shouldRelease)
+            tracker.apply (releaseAll (soundingB, kNumSamples - 1));
+
+        expectTrue (tracker.allReleased(),
+                    "regression: the note-off is eventually emitted -- every note-on still gets exactly one note-off");
+    }
+
+    // --- decideTransportStop(): decision table, independent of the above ---
+    {
+        // Not at the falling edge (still playing): never release, always
+        // free to advance -- there is no edge to lose here.
+        auto stillPlaying = decideTransportStop (/*wasPlaying*/ true, /*isPlayingNow*/ true, /*soundingCount*/ 3, /*numSamples*/ 256);
+        expectTrue (! stillPlaying.shouldRelease, "decideTransportStop: no release while transport keeps playing");
+        expectTrue (stillPlaying.advanceWasPlaying, "decideTransportStop: always safe to advance when not at the edge");
+
+        // Nothing sounding when the transport stops: no release needed, no
+        // edge to preserve either.
+        auto nothingSounding = decideTransportStop (/*wasPlaying*/ true, /*isPlayingNow*/ false, /*soundingCount*/ 0, /*numSamples*/ 256);
+        expectTrue (! nothingSounding.shouldRelease, "decideTransportStop: no release when nothing is sounding");
+        expectTrue (nothingSounding.advanceWasPlaying, "decideTransportStop: safe to advance when nothing is sounding");
+
+        // The exact regression case, in isolation.
+        auto zeroSampleEdge = decideTransportStop (/*wasPlaying*/ true, /*isPlayingNow*/ false, /*soundingCount*/ 3, /*numSamples*/ 0);
+        expectTrue (! zeroSampleEdge.shouldRelease, "decideTransportStop: a 0-sample block at the edge never releases");
+        expectTrue (! zeroSampleEdge.advanceWasPlaying, "decideTransportStop: a 0-sample block at the edge stays armed");
+
+        // The normal, already-covered case: non-empty block at the edge.
+        auto normalEdge = decideTransportStop (/*wasPlaying*/ true, /*isPlayingNow*/ false, /*soundingCount*/ 3, /*numSamples*/ 256);
+        expectTrue (normalEdge.shouldRelease, "decideTransportStop: a normal block at the edge releases");
+        expectTrue (normalEdge.advanceWasPlaying, "decideTransportStop: a normal block at the edge consumes it");
     }
 
     // --- Trigger 3: releaseResources --------------------------------------

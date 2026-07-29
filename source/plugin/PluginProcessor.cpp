@@ -93,7 +93,22 @@ void TupleProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     // RealtimeSanitizer, not this comment.
     outgoingBuffer.clear();
 
-    if (wasPlaying && ! isPlayingNow && sounding.count > 0)
+    // The falling-edge decision itself lives in tuple::app::decideTransportStop
+    // (source/app/TransportStop.h) — a pure function, testable without a JUCE
+    // host (tests/noteoff_tests.cpp, "Regression: front descendant sur un
+    // bloc de 0 echantillon"). Regression fixed there and closed here: a
+    // zero-sample block landing exactly on this edge has no valid sample to
+    // place a note-off at (Global Constraints: never fabricate an offset on
+    // an empty buffer) — the OLD code below still advanced `wasPlaying`
+    // unconditionally in that case, which erased the edge forever instead of
+    // merely delaying the release. `decideTransportStop` reports
+    // advanceWasPlaying == false for exactly that case, so `wasPlaying` is
+    // left untouched here and the very same edge is retried on the next
+    // block.
+    const auto stopDecision = tuple::app::decideTransportStop (
+        wasPlaying, isPlayingNow, sounding.count, buffer.getNumSamples());
+
+    if (stopDecision.shouldRelease)
     {
         // Global Constraints: "notes placées à leur offset d'échantillon
         // exact, jamais à 0". This trigger has no per-note timing of its own
@@ -102,18 +117,14 @@ void TupleProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         // sample count, and the LAST valid sample in it is the latest, most
         // conservative real offset available: it defers the release for as
         // long as this callback allows, rather than defaulting to the start.
-        // A zero-length block has no valid sample offset at all, so it
-        // emits nothing rather than fabricating one.
-        if (buffer.getNumSamples() > 0)
-        {
-            const auto offSample = buffer.getNumSamples() - 1;
-            const auto offBatch = tuple::app::releaseAll (sounding, offSample);
-            tuple::plugin::emit (offBatch, outgoingBuffer);
-            sounding.count = 0;
-        }
+        const auto offSample = buffer.getNumSamples() - 1;
+        const auto offBatch = tuple::app::releaseAll (sounding, offSample);
+        tuple::plugin::emit (offBatch, outgoingBuffer);
+        sounding.count = 0;
     }
 
-    wasPlaying = isPlayingNow;
+    if (stopDecision.advanceWasPlaying)
+        wasPlaying = isPlayingNow;
 
     midiMessages.swapWith (outgoingBuffer);
 }

@@ -86,6 +86,7 @@ target_sources(TupleVST PRIVATE
     source/plugin/MidiEmitter.cpp
     source/app/PlayChord.cpp
     source/app/ReleaseAll.cpp
+    source/app/TransportStop.cpp
 )
 
 target_include_directories(TupleVST PRIVATE source/plugin)
@@ -198,6 +199,7 @@ add_executable(NoteoffTests
     source/domain/Voicing.cpp
     source/app/PlayChord.cpp
     source/app/ReleaseAll.cpp
+    source/app/TransportStop.cpp
     source/plugin/MidiEmitter.cpp
 )
 target_include_directories(NoteoffTests PRIVATE source/domain source/app source/plugin)

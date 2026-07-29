@@ -4,6 +4,7 @@
 
 #include "../app/PlayChord.h"   // tuple::app::NoteBatch
 #include "../app/ReleaseAll.h"
+#include "../app/TransportStop.h"
 #include "MidiEmitter.h"
 #include "ParameterAdapter.h"
 #include "Params.h"
