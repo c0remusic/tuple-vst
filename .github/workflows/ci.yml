@@ -2,7 +2,31 @@ name: CI
 
 on:
   push:
+    # Un push qui ne touche QUE de la prose ne compile rien de different : il
+    # payait quand meme la matrice complete. Mesure du 2026-07-29 : un push
+    # coute ~150 minutes de quota facturees (Windows ~22 min reelles x2,
+    # macOS ~11 min x10), et deux des dix runs de la journee ne portaient que
+    # du markdown. Un push mixte prose+code passe toujours par la CI : ce
+    # filtre ne s'applique que si TOUS les chemins modifies matchent.
+    paths-ignore:
+      - '**.md'
+      - 'proof/**'
   workflow_dispatch:
+
+# Trois runs ont tourne en parallele sur cette branche le 2026-07-29, dont deux
+# deja perimes par le commit suivant, sans que rien ne les annule. Un resultat
+# qui porte sur du code qu'on vient de remplacer ne sert a rien -- sauf a
+# consommer du quota.
+#
+# Contrepartie nommee, pas cachee : pousser un second commit avant la fin du
+# premier run DETRUIT le resultat du premier. Sur une branche ou chaque commit
+# est une experience distincte dont on lit la sortie (les iterations RTSan de
+# cette journee), c'est un vrai cout. Il reste inferieur a celui de payer des
+# runs perimes, et `workflow_dispatch` permet de relancer a la demande le
+# resultat qu'on aurait voulu garder.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-and-validate:
