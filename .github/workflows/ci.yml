@@ -136,10 +136,41 @@ jobs:
           count=$(printf '%s\n' "$hits" | grep -c . || true)
           echo "source/ + tests/ files scanned: $(find source tests -type f | wc -l | tr -d ' ') ; files with the annotation: $count"
           if [ -z "$hits" ]; then
-            echo "::warning title=RTSan has zero coverage today::No file under source/ or tests/ carries [[clang::nonblocking]] yet (verified live above, not from memory). The RTSan self-test above proves the TOOLING works on this runner, but with no annotated entry point (e.g. TupleProcessor::processBlock) the sanitizer's realtime-context flag is never set, so it cannot flag a single real allocation/syscall/lock in Tuple's own code -- a green run here is proof the pipeline is wired, NOT proof the audio thread is safe. Tracked gap: annotate the real audio-thread entry point(s) and, since the only existing host-loading harness (tools/proof_hosts) is Windows-only while RTSan only runs on macOS, extend it cross-platform (dlopen/dlsym per the Task-1 notes) so RTSan can actually execute processBlock. Out of scope for this task (.github/workflows/ci.yml only)."
+            echo "::warning title=RTSan has zero coverage today::No file under source/ or tests/ carries [[clang::nonblocking]] yet (verified live above, not from memory). Below this step, the REAL TupleVST plugin (not a throwaway function) is now compiled with -DTUPLE_RTSAN=ON via this same brew LLVM and executed by pluginval, a real host -- so the sanitizer's instrumentation is genuinely present in the shipped code path and genuinely exercised by a host process. But with no annotated entry point (e.g. TupleProcessor::processBlock) the sanitizer's realtime-context flag is still never set, so it cannot flag a single real allocation/syscall/lock in Tuple's own code -- a green run there is proof the PIPELINE compiles and executes real Tuple code under the sanitizer, still NOT proof the audio thread is safe. Tracked gap, unchanged: annotate the real audio-thread entry point(s). Out of scope for this task (.github/workflows/ci.yml only, Task 5's files are already committed)."
           else
             echo "Annotated files: $hits"
           fi
+
+      # --- Step 3 continued: TUPLE_RTSAN wired into an actual CI build -------
+      # Corrects a real gap: the option existed in CMakeLists.txt since Task 1
+      # specifically for this job to use, but until now no configure line in
+      # this file ever passed -DTUPLE_RTSAN=ON -- only the throwaway self-test
+      # above ran under -fsanitize=realtime, never a line of Tuple's own code.
+      # A brand-new build tree (not "build/", which stays the plain
+      # Xcode-AppleClang build the rest of this job -- including clap-
+      # validator/pluginval's Steps 4/5 -- already relies on) avoids any risk
+      # of reusing object files compiled by a different compiler than the one
+      # actually configured this run.
+      - name: configure + build TupleVST (VST3) under RTSan (real code, real flags)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -e
+          cmake -B build-rtsan -DCMAKE_BUILD_TYPE=Release \
+            -DTUPLE_BUILD_PROOF_HOSTS=OFF -DTUPLE_RTSAN=ON \
+            -DCMAKE_CXX_COMPILER="$LLVM_PREFIX/bin/clang++" \
+            -DCMAKE_C_COMPILER="$LLVM_PREFIX/bin/clang"
+          cmake --build build-rtsan --config Release --target TupleVST_VST3 --parallel
+          echo "OK: TupleVST_VST3 compiled and linked with -fsanitize=realtime (verified via TUPLE_RTSAN's target_compile_options/target_link_options in CMakeLists.txt, not assumed)."
+
+      - name: locate RTSan plugin artefact
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -e
+          vst3_rtsan="build-rtsan/TupleVST_artefacts/Release/VST3/Tuple.vst3"
+          [ -e "$vst3_rtsan" ] || { echo "::error::RTSan VST3 artefact not found at $vst3_rtsan"; exit 1; }
+          echo "VST3_PATH_RTSAN=$vst3_rtsan" >> "$GITHUB_ENV"
 
       # --- Steps 4 & 5: the actual shipped plugin, both formats -------------
       - name: build plugin formats (VST3 + CLAP)
@@ -234,6 +265,23 @@ jobs:
         run: |
           set -o pipefail
           "$PLUGINVAL" --strictness-level 5 --validate "$VST3_PATH" 2>&1 | tee proof/pluginval-${{ matrix.os }}.txt
+          status=$?
+          exit $status
+
+      # --- Step 3, closing the loop: a real host executes the RTSan build ---
+      # clap-validator is deliberately NOT run against build-rtsan: its
+      # state-reproducibility failures (Step 4 above) are an already-tracked,
+      # unrelated Task 4 bug that reproduces regardless of any sanitizer, so
+      # running it a second time here would only add a duplicate, misleading
+      # red under the RTSan step's name. pluginval currently passes clean on
+      # the non-RTSan build, so a pass/fail here is a meaningful signal about
+      # THIS build, not noise from a bug this task does not own.
+      - name: pluginval --strictness-level 5 (RTSan build)
+        if: always() && runner.os == 'macOS' && steps.download_pluginval.outcome == 'success'
+        shell: bash
+        run: |
+          set -o pipefail
+          "$PLUGINVAL" --strictness-level 5 --validate "$VST3_PATH_RTSAN" 2>&1 | tee proof/pluginval-rtsan-${{ matrix.os }}.txt
           status=$?
           exit $status
 
