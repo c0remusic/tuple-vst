@@ -63,3 +63,162 @@ jobs:
             "$exe"
             echo "::endgroup::"
           done
+
+      # --- Step 3: RealtimeSanitizer, the proof of the audio-thread invariants
+      #
+      # Verified 2026-07-29 against real GitHub-hosted runners (throwaway
+      # probe workflow, deleted): `-fsanitize=realtime` is rejected outright
+      # ("unsupported option ... for target") on BOTH x86_64-pc-windows-msvc
+      # (clang-cl 20.1.8, the LLVM already on windows-latest's PATH) and on
+      # Apple's bundled clang (arm64-apple-darwin, Xcode 26.5). It DOES work
+      # with a genuine upstream LLVM/clang toolchain on macOS (`brew install
+      # llvm` -> clang 22.1.8): compiling and running a throwaway function
+      # marked `[[clang::nonblocking]]` that calls malloc() aborted with a
+      # real "RealtimeSanitizer: unsafe-library-call" report (exit 134), and
+      # the same function with no allocation ran clean (exit 0). So: macOS
+      # via brew LLVM is the only runner where this sanitizer is available at
+      # all -- Windows is skipped, explicitly and loudly, per Global
+      # Constraints, rather than silently.
+      - name: RTSan not available on Windows (explicit, not silent)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "::notice title=RTSan skipped on Windows::-fsanitize=realtime is rejected by clang-cl 20.1.8 for target x86_64-pc-windows-msvc ('unsupported option'), verified against this exact runner image on 2026-07-29. RealtimeSanitizer has no Windows/MSVC-ABI target support upstream. This is a known, permanent constraint of this runner, not a flake -- macOS is the only leg of this matrix that runs RTSan."
+
+      - name: install a real LLVM (macOS system clang cannot build RTSan)
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm
+          echo "LLVM_PREFIX=$(brew --prefix llvm)" >> "$GITHUB_ENV"
+
+      - name: RTSan self-test (proves the sanitizer itself works on this runner)
+        if: runner.os == 'macOS'
+        run: |
+          set -e
+          mkdir -p rtsan_selftest
+          cat > rtsan_selftest/main.cpp <<'EOF'
+          #include <cstdlib>
+          #include <cstdio>
+          // Suffix placement is required -- [[clang::nonblocking]] is a
+          // function-TYPE attribute (like noexcept), not a declaration
+          // attribute; a prefix placement is rejected by the compiler
+          // (verified 2026-07-29 against this exact toolchain).
+          void violatesRealtime() [[clang::nonblocking]] {
+              void* p = malloc(16);
+              free(p);
+          }
+          void cleanRealtime() [[clang::nonblocking]] {
+              // no allocation, syscall, or lock -> must pass under RTSan.
+          }
+          int main(int argc, char** argv) {
+              if (argc > 1 && argv[1][0] == 'v') { violatesRealtime(); return 0; }
+              cleanRealtime();
+              return 0;
+          }
+          EOF
+          "$LLVM_PREFIX/bin/clang++" -std=c++17 -fsanitize=realtime \
+            rtsan_selftest/main.cpp -o rtsan_selftest/probe
+
+          ./rtsan_selftest/probe c
+          echo "OK: clean nonblocking path did not trip RTSan (exit 0, as expected)"
+
+          if ./rtsan_selftest/probe v; then
+            echo "::error::RTSan self-test FAILED: a malloc() inside a [[clang::nonblocking]] function was NOT caught. The sanitizer is not doing its job on this runner -- treat every other RTSan result on this leg as untrustworthy until this is fixed."
+            exit 1
+          fi
+          echo "OK: RTSan caught the deliberate malloc() violation and aborted, as expected."
+
+      - name: RTSan coverage gap (honest, not swept under the rug)
+        if: runner.os == 'macOS'
+        run: |
+          echo "Repo-wide scan for [[clang::nonblocking]] outside .github/ and docs/ (proves the scan ran, not just that it found zero):"
+          hits=$(grep -rl "clang::nonblocking" source tests 2>/dev/null || true)
+          count=$(printf '%s\n' "$hits" | grep -c . || true)
+          echo "source/ + tests/ files scanned: $(find source tests -type f | wc -l | tr -d ' ') ; files with the annotation: $count"
+          if [ -z "$hits" ]; then
+            echo "::warning title=RTSan has zero coverage today::No file under source/ or tests/ carries [[clang::nonblocking]] yet (verified live above, not from memory). The RTSan self-test above proves the TOOLING works on this runner, but with no annotated entry point (e.g. TupleProcessor::processBlock) the sanitizer's realtime-context flag is never set, so it cannot flag a single real allocation/syscall/lock in Tuple's own code -- a green run here is proof the pipeline is wired, NOT proof the audio thread is safe. Tracked gap: annotate the real audio-thread entry point(s) and, since the only existing host-loading harness (tools/proof_hosts) is Windows-only while RTSan only runs on macOS, extend it cross-platform (dlopen/dlsym per the Task-1 notes) so RTSan can actually execute processBlock. Out of scope for this task (.github/workflows/ci.yml only)."
+          else
+            echo "Annotated files: $hits"
+          fi
+
+      # --- Steps 4 & 5: the actual shipped plugin, both formats -------------
+      - name: build plugin formats (VST3 + CLAP)
+        shell: bash
+        run: cmake --build build --config Release --target TupleVST_VST3 TupleVST_CLAP --parallel
+
+      - name: locate plugin artefacts
+        shell: bash
+        run: |
+          set -e
+          vst3="build/TupleVST_artefacts/Release/VST3/Tuple.vst3"
+          clap="build/TupleVST_artefacts/Release/CLAP/Tuple.clap"
+          [ -e "$vst3" ] || { echo "::error::VST3 artefact not found at $vst3"; exit 1; }
+          [ -e "$clap" ] || { echo "::error::CLAP artefact not found at $clap"; exit 1; }
+          echo "VST3_PATH=$vst3" >> "$GITHUB_ENV"
+          echo "CLAP_PATH=$clap" >> "$GITHUB_ENV"
+          mkdir -p proof
+
+      - name: download clap-validator (latest release)
+        shell: bash
+        run: |
+          set -e
+          api="https://api.github.com/repos/free-audio/clap-validator/releases/latest"
+          if [ "${{ runner.os }}" = "Windows" ]; then suffix="windows.zip"; else suffix="macos-universal.zip"; fi
+          url=$(curl -sSL -H "Authorization: Bearer ${{ github.token }}" "$api" \
+            | jq -r --arg s "$suffix" '.assets[] | select(.name | endswith($s)) | .browser_download_url')
+          echo "clap-validator asset: $url"
+          [ -n "$url" ] || { echo "::error::no clap-validator asset matched suffix $suffix"; exit 1; }
+          curl -sSL -o cv.zip "$url"
+          mkdir -p tools/clap-validator-bin
+          (cd tools/clap-validator-bin && cmake -E tar xf ../../cv.zip)
+          bin=$(find tools/clap-validator-bin -type f -iname "clap-validator*" ! -iname "*.zip" | head -1)
+          [ -n "$bin" ] || { echo "::error::clap-validator binary not found after extraction"; find tools/clap-validator-bin; exit 1; }
+          chmod +x "$bin" || true
+          echo "CLAP_VALIDATOR=$bin" >> "$GITHUB_ENV"
+
+      - name: download pluginval (latest release)
+        shell: bash
+        run: |
+          set -e
+          api="https://api.github.com/repos/Tracktion/pluginval/releases/latest"
+          if [ "${{ runner.os }}" = "Windows" ]; then suffix="Windows.zip"; else suffix="macOS.zip"; fi
+          url=$(curl -sSL -H "Authorization: Bearer ${{ github.token }}" "$api" \
+            | jq -r --arg s "$suffix" '.assets[] | select(.name | endswith($s)) | .browser_download_url')
+          echo "pluginval asset: $url"
+          [ -n "$url" ] || { echo "::error::no pluginval asset matched suffix $suffix"; exit 1; }
+          curl -sSL -o pv.zip "$url"
+          mkdir -p tools/pluginval-bin
+          (cd tools/pluginval-bin && cmake -E tar xf ../../pv.zip)
+          bin=$(find tools/pluginval-bin -type f -iname "pluginval*" ! -iname "*.zip" | head -1)
+          [ -n "$bin" ] || { echo "::error::pluginval binary not found after extraction"; find tools/pluginval-bin; exit 1; }
+          chmod +x "$bin" || true
+          echo "PLUGINVAL=$bin" >> "$GITHUB_ENV"
+
+      # --- Step 4: clap-validator on the .clap, bloquant ---------------------
+      - name: clap-validator validate
+        shell: bash
+        run: |
+          set -o pipefail
+          "$CLAP_VALIDATOR" validate "$CLAP_PATH" 2>&1 | tee proof/clap-validator-${{ matrix.os }}.txt
+          status=$?
+          exit $status
+
+      # --- Step 5: pluginval --strictness-level 5 on the .vst3, bloquant -----
+      # Exit code contract: 0 == pass, 1 == fail. Both are meaningful (not a
+      # crash/"tool broken" code), so the job fails on anything != 0 without
+      # needing to special-case 1 versus e.g. a segfault.
+      - name: pluginval --strictness-level 5
+        shell: bash
+        run: |
+          set -o pipefail
+          "$PLUGINVAL" --strictness-level 5 --validate "$VST3_PATH" 2>&1 | tee proof/pluginval-${{ matrix.os }}.txt
+          status=$?
+          exit $status
+
+      - name: upload proof/ for this run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proof-${{ matrix.os }}
+          path: proof/
+          if-no-files-found: warn
