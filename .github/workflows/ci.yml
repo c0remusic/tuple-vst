@@ -23,17 +23,16 @@ jobs:
           path: build/_deps
           key: fetchcontent-${{ matrix.os }}-${{ hashFiles('CMakeLists.txt') }}
 
-      - name: diagnose VS install (temporary)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -all -format text
-          cmake --help 2>&1 | Select-String -Pattern "Visual Studio" -Context 0,1
-
-      - name: configure (Windows, MSVC, Visual Studio generator)
+      # windows-latest's installed Visual Studio version drifts over time
+      # (verified 2026-07-29: the image ships VS 18/2026, not VS 17/2022 --
+      # asking CMake for a generator that isn't the instance actually present
+      # fails hard with "could not find any instance of Visual Studio"). Let
+      # CMake's default-generator detection pick whatever is really there
+      # instead of hardcoding a version tied to when this file was written.
+      - name: configure (Windows, MSVC, default generator)
         if: runner.os == 'Windows'
         shell: bash
-        run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DTUPLE_BUILD_PROOF_HOSTS=OFF
+        run: cmake -B build -A x64 -DTUPLE_BUILD_PROOF_HOSTS=OFF
 
       - name: configure (macOS)
         if: runner.os == 'macOS'
