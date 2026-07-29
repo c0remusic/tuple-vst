@@ -321,7 +321,7 @@ jobs:
           echo "function-effects warnings -- Tuple's own code: $ours ; vendored (JUCE): $vendored"
 
           if [ "$ours" -gt 0 ]; then
-            echo "::warning title=$ours call site(s) in Tuple's own code are unproven::'Unproven', not 'proven unsafe'. What remains after annotating our own app/plugin functions is the JUCE boundary: AudioPlayHead::getPosition() is virtual (host-supplied, unprovable by construction), and AudioBuffer::clear / MidiBuffer::clear / MidiBuffer::swapWith have no definition in the translation unit. Full list in $out. The bloquant signal is the runtime RTSan result below."
+            echo "::warning title=$ours call site(s) in Tuple's own code are unproven::'Unproven', not 'proven unsafe'. Measured on run 30471091956, every one of them is a call into a JUCE type -- MidiMessage's constructors/destructor, MidiBuffer::addEvent/clear/swapWith, AudioBuffer::clear, and AudioPlayHead::getPosition (virtual, host-supplied, unprovable by construction). No warning remains about a Tuple function calling another Tuple function: annotating decideTransportStop and releaseAll made Clang verify their bodies and both came back clean. Full list in $out. The bloquant signal is the runtime RTSan result below."
           else
             echo "Clang raised no function-effects warning on Tuple's own code."
           fi

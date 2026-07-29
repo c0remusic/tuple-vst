@@ -113,12 +113,60 @@ un build livré. Ce run DOIT avorter avec un rapport RealtimeSanitizer ; s'il
 sort 0, le CI échoue en disant que l'annotation n'atteint pas le runtime et
 que le run propre ne prouvait rien.
 
-**Moitié statique de l'attribut** : l'analyse function-effects de Clang ne
-voit pas à travers la répartition virtuelle, donc les appels dans JUCE
-(`AudioPlayHead::getPosition()` et voisins) sortent « non prouvés », ce qui
-n'est pas « prouvés dangereux ». Le CI collecte ces diagnostics dans
-`proof/rtsan-function-effects-<os>.txt` et les remonte en `::warning::` — le
-signal bloquant reste le résultat runtime, pas cette liste.
+**Preuve finale, run 30471091956** — le sanitizer nomme notre propre symbole,
+ce qui est exactement ce qui manquait au départ :
+
+```
+==12035==ERROR: RealtimeSanitizer: unsafe-library-call
+SUMMARY: RealtimeSanitizer: unsafe-library-call (Tuple:arm64+0x22c4c)
+  in TupleProcessor::processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&)+0x3c
+```
+
+(exit 134 ; le run non armé du même binaire, juste avant, sort 0 sur les deux
+formats.)
+
+### Deux pièges rencontrés, tous deux trouvés par un check et non par relecture
+
+**1. Le témoin était supprimé par l'optimiseur.** Run 30469650838 : toute
+l'instrumentation était vérifiablement présente — `compile_commands.json`
+montrant `-fsanitize=realtime` ET `-DTUPLE_RTSAN` sur la ligne de compilation
+de `PluginProcessor.cpp`, le plugin construit référençant
+`___rtsan_realtime_enter`, les trois images liant
+`libclang_rt.rtsan_osx_dynamic.dylib` — et le run armé sortait quand même 0.
+Cause : LLVM supprime un `malloc()` dont le résultat n'est jamais observé et
+qui est `free()` immédiatement ; à `-O3` la violation délibérée était du code
+mort. Le self-test RTSan du même job ne pouvait pas l'attraper : il compile
+sans optimisation. **Un témoin qui ne survit qu'à `-O0` ne témoigne pas du
+build Release qu'il est censé garder.** Corrigé par une barrière
+`asm volatile`.
+
+Conséquence de méthode : le step qui précédait le témoin se contentait d'un
+`echo "OK: ... compiled with -fsanitize=realtime"` — une affirmation sur des
+binaires que personne n'avait regardés. Il lit désormais quatre faits sur les
+artefacts eux-mêmes (`compile_commands.json`, `nm -u`, `otool -L`), chacun
+bloquant.
+
+**2. `-Wfunction-effects` était éteint par défaut.** Le même run rapportait
+**0** diagnostic function-effects sur tout le build — indiscernable de « rien
+à signaler ». Le drapeau est maintenant demandé par son nom dans
+`CMakeLists.txt` : 19 lignes apparaissent aussitôt. Silence veut désormais
+dire silence.
+
+### Triage des diagnostics statiques (run 30471091956, mesuré)
+
+`10` warnings sur le code de Tuple, `4` internes à JUCE (comptés séparément
+pour ne pas gonfler le nôtre). Décision, cas par cas :
+
+| Appel non prouvé | Où | Décision |
+|---|---|---|
+| `decideTransportStop`, `releaseAll` | `source/app/` | **Annotés.** C'étaient nos propres fonctions, rapportées « no definition in this translation unit » : l'analyse s'arrêtait à NOTRE frontière, pas à celle de JUCE. Annotées, Clang vérifie leurs corps — et les deux ressortent propres, les warnings ont disparu. |
+| `emit` | `source/plugin/MidiEmitter.*` | **Annoté**, ce qui déplace l'analyse dans son corps et y révèle 6 appels JUCE (`MidiMessage` ctor/dtor, `noteOn`/`noteOff`, `MidiBuffer::addEvent`). C'est la bonne frontière : l'annotation affirme qu'`addEvent` ne réalloue jamais ici parce que `prepareToPlay` a réservé le tampon — Clang ne peut pas le vérifier, RTSan si. |
+| `AudioPlayHead::getPosition` | JUCE | **Conservé.** Méthode virtuelle fournie par l'hôte : non prouvable par construction, aucun `[[clang::blocking]]` ni suppression n'y changerait quoi que ce soit. |
+| `AudioBuffer::clear`, `MidiBuffer::clear`/`swapWith` | JUCE | **Conservé.** Pas de corps dans l'unité de compilation. Dépendance vendorée, non annotable sans patcher JUCE. |
+| 4 × « attribute 'nonblocking' should not be added via type conversion » | `juce_CoreAudio_mac.cpp`, `juce_CoreMidi_mac.mm` | **Hors sujet.** Sources JUCE que Tuple n'écrit ni n'appelle. Comptées à part. |
+
+Aucun warning ne subsiste sur un appel Tuple → Tuple. Ce qui reste est
+exactement la frontière JUCE, et c'est le runtime qui la couvre.
 
 Windows : skip explicite et journalisé (`::notice::`), jamais silencieux,
 conforme à la demande du plan. Le leg Windows compile et exécute quand même
