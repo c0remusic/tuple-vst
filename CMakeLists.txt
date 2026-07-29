@@ -138,6 +138,14 @@ if(TUPLE_RTSAN)
         # compiles its CI-only sabotage witness only under it. Never defined
         # in a shipped build.
         target_compile_definitions(TupleVST PUBLIC TUPLE_RTSAN=1)
+        # Asked for explicitly rather than relied on: the compile-time half of
+        # [[clang::nonblocking]] (see RealtimeAnnotations.h) is only useful if
+        # it is actually emitted, and run 30467546532 produced ZERO
+        # function-effects lines across the whole build -- which is either
+        # "nothing to report" or "the warning group is off by default", and
+        # those two must not be indistinguishable. With the flag named here,
+        # silence means silence.
+        target_compile_options(TupleVST PUBLIC -Wfunction-effects)
     else()
         message(WARNING "TUPLE_RTSAN is ON but compiler '${CMAKE_CXX_COMPILER_ID}' "
                          "does not support -fsanitize=realtime (Clang >= 20 required). Ignoring.")

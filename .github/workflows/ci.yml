@@ -215,6 +215,7 @@ jobs:
           mkdir -p proof
           cmake -B build-rtsan -DCMAKE_BUILD_TYPE=Release \
             -DTUPLE_BUILD_PROOF_HOSTS=ON -DTUPLE_RTSAN=ON \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_CXX_COMPILER="$LLVM_PREFIX/bin/clang++" \
             -DCMAKE_C_COMPILER="$LLVM_PREFIX/bin/clang" \
             -DCMAKE_AR="$LLVM_PREFIX/bin/llvm-ar" \
@@ -222,7 +223,72 @@ jobs:
           cmake --build build-rtsan --config Release \
             --target TupleVST_VST3 TupleVST_CLAP TupleVST3HostSmoke TupleClapHostSmoke \
             --parallel 2>&1 | tee proof/rtsan-build-${{ matrix.os }}.log
-          echo "OK: plugin (VST3 + CLAP) and both proof hosts compiled and linked with -fsanitize=realtime, using $LLVM_PREFIX's clang++/clang/llvm-ar/llvm-ranlib throughout."
+
+      # This step used to be an `echo "OK: ... compiled with -fsanitize=realtime"`.
+      # That was an assertion, not a measurement, and it was wrong to trust it:
+      # on run 30467546532 the whole RTSan leg went green up to the sabotage
+      # witness, which then proved a deliberate malloc() inside processBlock was
+      # never caught. The echo had happily claimed instrumentation the binaries
+      # may not have carried. It is replaced by four facts read off the actual
+      # artefacts, each of them bloquant.
+      - name: verify the RTSan build is really instrumented (measured, not asserted)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          host="build-rtsan/TupleVST3HostSmoke_artefacts/Release/TupleVST3HostSmoke"
+          claphost="build-rtsan/TupleClapHostSmoke"
+          plug="build-rtsan/TupleVST_artefacts/Release/VST3/Tuple.vst3/Contents/MacOS/Tuple"
+          out="proof/rtsan-instrumentation-${{ matrix.os }}.txt"
+          : > "$out"
+
+          {
+            echo "=== compile command actually used for PluginProcessor.cpp ==="
+            jq -r '.[] | select(.file | endswith("PluginProcessor.cpp")) | .command' \
+              build-rtsan/compile_commands.json || echo "(compile_commands.json unreadable)"
+            for target in "$host" "$claphost" "$plug"; do
+              echo "=== otool -L $target ==="
+              otool -L "$target" 2>&1 | sed -n '2,$p' | grep -i "rtsan" || echo "(no rtsan runtime in this image)"
+              echo "=== undefined __rtsan_* symbols in $target ==="
+              nm -u "$target" 2>/dev/null | grep -i "rtsan" | head -10 || echo "(none)"
+            done
+          } | tee -a "$out"
+
+          fail=0
+
+          # 1. The plugin's own translation unit must have been given both the
+          #    sanitizer flag and the TUPLE_RTSAN define, or the annotation and
+          #    the sabotage witness are compiled out of existence.
+          cmd=$(jq -r '.[] | select(.file | endswith("PluginProcessor.cpp")) | .command' build-rtsan/compile_commands.json)
+          case "$cmd" in
+            *-fsanitize=realtime*) echo "OK: PluginProcessor.cpp compiled with -fsanitize=realtime" ;;
+            *) echo "::error title=Plugin code is not instrumented::PluginProcessor.cpp was compiled WITHOUT -fsanitize=realtime. Every RTSan result in this job would be vacuous."; fail=1 ;;
+          esac
+          case "$cmd" in
+            *TUPLE_RTSAN*) echo "OK: PluginProcessor.cpp compiled with TUPLE_RTSAN defined" ;;
+            *) echo "::error title=TUPLE_RTSAN not defined::PluginProcessor.cpp was compiled without -DTUPLE_RTSAN, so the sabotage witness does not exist in this binary and cannot fail."; fail=1 ;;
+          esac
+
+          # 2. The compiled plugin must actually reference the runtime entry
+          #    points the attribute is supposed to emit. This is what proves
+          #    [[clang::nonblocking]] survived all the way to codegen.
+          if nm -u "$plug" 2>/dev/null | grep -q "__rtsan_realtime_enter"; then
+            echo "OK: the built plugin references __rtsan_realtime_enter -- processBlock is instrumented"
+          else
+            echo "::error title=No realtime-context instrumentation in the plugin::The built plugin has no undefined reference to __rtsan_realtime_enter. [[clang::nonblocking]] did not reach codegen, so nothing ever enters real-time context."
+            fail=1
+          fi
+
+          # 3. The host that will load it must carry the sanitizer runtime in
+          #    its own image, or interceptors are installed too late (the
+          #    pluginval failure documented further down).
+          if otool -L "$host" | grep -qi "rtsan"; then
+            echo "OK: the VST3 proof host links the RealtimeSanitizer runtime itself"
+          else
+            echo "::error title=Proof host has no sanitizer runtime::TupleVST3HostSmoke was linked without -fsanitize=realtime, so the runtime would only arrive via the plugin's dlopen -- too late to install interceptors, exactly the failure mode that makes pluginval unusable here."
+            fail=1
+          fi
+
+          exit $fail
 
       # Clang's function-effects analysis is the COMPILE-TIME half of
       # [[clang::nonblocking]]; the runtime sanitizer is the other half, and
