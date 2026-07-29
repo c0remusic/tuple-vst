@@ -82,6 +82,7 @@ juce_add_plugin(TupleVST
 target_sources(TupleVST PRIVATE
     source/plugin/PluginProcessor.cpp
     source/plugin/PluginEditor.cpp
+    source/plugin/ParameterAdapter.cpp
 )
 
 target_include_directories(TupleVST PRIVATE source/plugin)
@@ -159,6 +160,28 @@ target_include_directories(VoicingTests PRIVATE source/domain)
 target_compile_features(VoicingTests PRIVATE cxx_std_17)
 target_compile_definitions(VoicingTests PRIVATE
     TUPLE_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/fixtures")
+
+# --- Params test binary (Task 4) --------------------------------------------
+# Unlike DomainTests/VoicingTests this one DOES need JUCE (ParameterAdapter is
+# the seam where a JUCE type touches settings), but it stays as shallow a
+# JUCE dependency as the task allows: juce_audio_processors + juce_events,
+# no juce_gui_basics (see tests/params_tests.cpp's TestHostProcessor).
+add_executable(ParamsTests
+    tests/params_tests.cpp
+    source/plugin/ParameterAdapter.cpp
+)
+target_include_directories(ParamsTests PRIVATE source/plugin)
+target_compile_features(ParamsTests PRIVATE cxx_std_17)
+target_compile_definitions(ParamsTests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_MP3AUDIOFORMAT=0
+)
+target_link_libraries(ParamsTests PRIVATE
+    juce::juce_audio_processors
+    juce::juce_events
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
 
 if(TUPLE_BUILD_PROOF_HOSTS AND WIN32)
     juce_add_console_app(TupleVST3HostSmoke

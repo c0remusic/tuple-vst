@@ -5,7 +5,8 @@
 // MIDI-only plugin at all. See Global Constraints > "Contraintes d'hôte".
 TupleProcessor::TupleProcessor()
     : AudioProcessor (BusesProperties()
-        .withOutput ("Out", juce::AudioChannelSet::stereo(), true))
+        .withOutput ("Out", juce::AudioChannelSet::stereo(), true)),
+      apvts (*this, nullptr, "PARAMETERS", tuple::plugin::createParameterLayout())
 {
 }
 
@@ -84,12 +85,17 @@ void TupleProcessor::changeProgramName (int /*index*/, const juce::String& /*new
 {
 }
 
-void TupleProcessor::getStateInformation (juce::MemoryBlock& /*destData*/)
+void TupleProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
+    if (auto xml = apvts.copyState().createXml())
+        copyXmlToBinary (*xml, destData);
 }
 
-void TupleProcessor::setStateInformation (const void* /*data*/, int /*sizeInBytes*/)
+void TupleProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
+    if (auto xml = getXmlFromBinary (data, sizeInBytes))
+        if (xml->hasTagName (apvts.state.getType()))
+            apvts.replaceState (juce::ValueTree::fromXml (*xml));
 }
 
 // This factory is the one symbol every JUCE plugin format wrapper (VST3,
