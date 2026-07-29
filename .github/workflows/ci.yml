@@ -220,6 +220,11 @@ jobs:
       # crash/"tool broken" code), so the job fails on anything != 0 without
       # needing to special-case 1 versus e.g. a segfault.
       - name: pluginval --strictness-level 5
+        # Independent of clap-validator's result: both are their own
+        # bloquant check (Steps 4 and 5), and one failing must not hide
+        # whether the other also would have. The job as a whole still
+        # reports failure if either step failed.
+        if: always()
         shell: bash
         run: |
           set -o pipefail
