@@ -23,6 +23,13 @@ jobs:
           path: build/_deps
           key: fetchcontent-${{ matrix.os }}-${{ hashFiles('CMakeLists.txt') }}
 
+      - name: diagnose VS install (temporary)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -all -format text
+          cmake --help 2>&1 | Select-String -Pattern "Visual Studio" -Context 0,1
+
       - name: configure (Windows, MSVC, Visual Studio generator)
         if: runner.os == 'Windows'
         shell: bash
