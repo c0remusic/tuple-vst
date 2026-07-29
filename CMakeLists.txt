@@ -130,6 +130,14 @@ if(TUPLE_RTSAN)
         # RealtimeSanitizer runtime into the final binary.
         target_compile_options(TupleVST PUBLIC -fsanitize=realtime)
         target_link_options(TupleVST PUBLIC -fsanitize=realtime)
+        # Lets the source distinguish "built for the sanitizer" from a normal
+        # build: source/plugin/RealtimeAnnotations.h turns it into a hard
+        # #error if the toolchain does not actually implement
+        # [[clang::nonblocking]] (a green RTSan run with no annotation in
+        # effect is worse than no RTSan run at all), and PluginProcessor
+        # compiles its CI-only sabotage witness only under it. Never defined
+        # in a shipped build.
+        target_compile_definitions(TupleVST PUBLIC TUPLE_RTSAN=1)
     else()
         message(WARNING "TUPLE_RTSAN is ON but compiler '${CMAKE_CXX_COMPILER_ID}' "
                          "does not support -fsanitize=realtime (Clang >= 20 required). Ignoring.")
@@ -146,9 +154,14 @@ clap_juce_extensions_plugin(TARGET TupleVST
 # architecture, never linked into the .vst3/.clap, and exists solely to prove
 # "loads in a real host, doesn't crash" with something stronger than
 # `dumpbin -exports`. See proof/task1-build.md and the .cpp files themselves.
-# Windows-only for now (both smoke tests currently rely on Win32 APIs); a
-# macOS pass needs the LoadLibrary/GetProcAddress calls in
-# clap_host_smoke.cpp swapped for dlopen/dlsym when a Mac is available.
+#
+# Cross-platform since 2026-07-29: clap_host_smoke.cpp's LoadLibrary/
+# GetProcAddress calls now sit behind a dlopen/dlsym alternative (the VST3 one
+# never needed a Win32 API in the first place, it was only caught by the same
+# `AND WIN32` gate). That gate is gone below, and it was not a cosmetic
+# cleanup: macOS is the ONLY platform where -fsanitize=realtime is supported,
+# so before the port there was no host under our control that could execute
+# TupleProcessor::processBlock with the sanitizer active.
 option(TUPLE_BUILD_PROOF_HOSTS "Build the Task-1-Step-5 host-loading smoke tests" ON)
 
 # --- Domain test binary (Task 2) --------------------------------------------
@@ -238,7 +251,7 @@ target_link_libraries(NoteoffTests PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
 
-if(TUPLE_BUILD_PROOF_HOSTS AND WIN32)
+if(TUPLE_BUILD_PROOF_HOSTS)
     juce_add_console_app(TupleVST3HostSmoke
         PRODUCT_NAME "TupleVST3HostSmoke"
     )
@@ -261,4 +274,32 @@ if(TUPLE_BUILD_PROOF_HOSTS AND WIN32)
         ${clap_juce_extensions_SOURCE_DIR}/clap-libs/clap/include
     )
     target_compile_features(TupleClapHostSmoke PRIVATE cxx_std_17)
+    # dlopen/dlsym live in libdl on Linux; empty string on macOS and Windows,
+    # where they are in libc / not used at all.
+    target_link_libraries(TupleClapHostSmoke PRIVATE ${CMAKE_DL_LIBS})
+
+    # The sanitizer runtime has to be in the MAIN EXECUTABLE, not only in the
+    # plugin it loads. This is the difference between a working RTSan run and
+    # an immediate abort, and it is measured, not assumed: CI run 30437655033
+    # ran pluginval (a pre-built host, no sanitizer of its own) against an
+    # RTSan-instrumented Tuple.vst3 and got
+    #
+    #   ==17045==ERROR: Interceptors are not working. This may be because
+    #   RealtimeSanitizer is loaded too late (e.g. via dlopen).
+    #   pluginval received Abort trap: 6
+    #
+    # because the runtime only arrived when the plugin was dlopen()'d, after
+    # the process had already started. Building these hosts with
+    # -fsanitize=realtime puts libclang_rt.rtsan into the image at launch, so
+    # its interceptors are installed before anything is loaded; the plugin's
+    # own instrumentation then resolves against that same already-loaded
+    # runtime. These targets do not link TupleVST, so the PUBLIC propagation
+    # set up in the TUPLE_RTSAN block above never reaches them — hence the
+    # explicit repeat here.
+    if(TUPLE_RTSAN AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        foreach(proof_host TupleVST3HostSmoke TupleClapHostSmoke)
+            target_compile_options(${proof_host} PRIVATE -fsanitize=realtime)
+            target_link_options(${proof_host} PRIVATE -fsanitize=realtime)
+        endforeach()
+    endif()
 endif()

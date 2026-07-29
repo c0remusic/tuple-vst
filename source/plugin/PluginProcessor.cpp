@@ -1,6 +1,10 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+#if defined(TUPLE_RTSAN)
+ #include <cstdlib>
+#endif
+
 namespace {
 
 // juce_MidiBuffer.cpp's addEvent() stores each event as int32 sampleNumber +
@@ -21,6 +25,11 @@ TupleProcessor::TupleProcessor()
         .withOutput ("Out", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "PARAMETERS", tuple::plugin::createParameterLayout())
 {
+#if defined(TUPLE_RTSAN)
+    // Off the audio thread, once. See rtsanSabotage's declaration for why this
+    // exists and what CI does with it.
+    rtsanSabotage = (std::getenv ("TUPLE_RTSAN_SABOTAGE") != nullptr);
+#endif
 }
 
 TupleProcessor::~TupleProcessor()
@@ -55,8 +64,29 @@ void TupleProcessor::releaseResources()
     sounding.count = 0;
 }
 
-void TupleProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
+// TUPLE_NONBLOCKING is repeated here because it is part of the function TYPE:
+// a definition without it would not match the declaration in the header.
+void TupleProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages) TUPLE_NONBLOCKING
 {
+#if defined(TUPLE_RTSAN)
+    if (rtsanSabotage)
+    {
+        // Deliberate, opt-in, sanitizer-build-only violation: the planted
+        // witness described at rtsanSabotage's declaration. RTSan must abort
+        // here. The static -Wfunction-effects diagnostic is silenced for this
+        // block ONLY — it would otherwise report a "finding" that is the whole
+        // point of the code, drowning the real ones in the build-log summary
+        // CI collects. Silencing the compile-time diagnostic does not touch
+        // the runtime instrumentation (RealtimeAnnotations.h, point 2), which
+        // is precisely what this block is here to exercise.
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wfunction-effects"
+        void* deliberate = std::malloc (16);
+        std::free (deliberate);
+        #pragma clang diagnostic pop
+    }
+#endif
+
     // This device produces MIDI, not audio (Global Constraints: fake output
     // bus only satisfies hosts that refuse a MIDI-only plugin).
     buffer.clear();

@@ -49,26 +49,82 @@ preuve n'est pas un one-off : elle se réexécute et doit continuer à réussir 
 chaque push, sinon la sanitizer lui-même serait suspect (voir sa clause
 `::error::` en cas d'échec).
 
-⚠️ **Point non résolu, dit explicitement dans les logs ET ici, pas balayé
-sous le tapis** : au 2026-07-29, **aucun fichier** sous `source/` ou `tests/`
-ne porte l'annotation `[[clang::nonblocking]]` (grep repo-wide confirmé dans
-le CI lui-même à chaque run, step "RTSan coverage gap"). Le self-test prouve
-que l'OUTIL fonctionne sur ce runner ; il ne prouve PAS que le thread audio de
-Tuple est sûr, puisque rien n'entre encore en "contexte temps réel" du point
-de vue du sanitizer. Pour que Step 3 devienne une vraie preuve de couverture,
-il manque :
-1. Annoter le vrai point d'entrée (`TupleProcessor::processBlock`) —
-   hors périmètre de cette tâche (Files = `.github/workflows/ci.yml`
-   seulement, et Task 5 est déjà committée).
-2. `tools/proof_hosts/` est actuellement **Windows-only**
-   (`vst3_host_smoke.cpp`/`clap_host_smoke.cpp` utilisent `LoadLibrary`/
-   `GetProcAddress`) alors que RTSan ne tourne que sur macOS — aucun runner
-   ne peut aujourd'hui charger le plugin ET le sanitizer en même temps. Il
-   faudrait porter ces hôtes en `dlopen`/`dlsym` (déjà noté comme travail
-   restant dans `proof/task1-build.md`).
+### Le trou de couverture, et sa fermeture (2026-07-29, même jour)
+
+**État initial, tel que mesuré** : le self-test ci-dessus prouvait que
+l'OUTIL fonctionne sur ce runner, pas que le thread audio de Tuple est sûr —
+un grep repo-wide exécuté dans le CI lui-même ne trouvait `[[clang::nonblocking]]`
+dans **aucun** fichier sous `source/` ou `tests/`. Rien n'entrait en contexte
+temps réel, donc le sanitizer ne pouvait rien signaler dans le code de Tuple.
+Deux manques nommés à l'époque, tous deux traités ci-dessous :
+
+1. **Le point d'entrée n'était pas annoté.**
+   `TupleProcessor::processBlock` porte désormais `TUPLE_NONBLOCKING`
+   (`source/plugin/RealtimeAnnotations.h`), sur la déclaration ET la
+   définition — l'attribut fait partie du TYPE de la fonction, une seule des
+   deux ne suffirait pas. La macro n'existe que là où le compilateur
+   implémente réellement l'attribut ; ailleurs (MSVC) elle s'efface, sans
+   quoi chaque unité de compilation Windows sortirait un
+   « unknown attribute ». Un build `-DTUPLE_RTSAN=ON` sur un toolchain qui
+   ne l'implémente pas s'arrête sur un `#error` : un binaire RTSan sans
+   annotation effective serait vert et vide, pire que pas de RTSan du tout.
+
+2. **`tools/proof_hosts/` était Windows-only, et RTSan est macOS-only.**
+   Aucun runner ne pouvait charger le plugin ET le sanitizer en même temps.
+   `clap_host_smoke.cpp` a désormais une branche `dlopen`/`dlsym` à côté de
+   sa branche `LoadLibrary`/`GetProcAddress`, plus la résolution du bundle
+   macOS (`Tuple.clap/Contents/MacOS/<binaire>` — `dlopen` sur le `.clap`
+   lui-même échoue, c'est un répertoire). `vst3_host_smoke.cpp` n'utilisait
+   en fait aucune API Win32 : il était seulement pris dans le même
+   `if(... AND WIN32)` de `CMakeLists.txt`, retiré. Le CLAP smoke appelle
+   maintenant un vrai `process()` (un bloc de 512 frames) — sans lui, la
+   séquence s'arrêtait à `start_processing` et n'entrait jamais dans
+   `processBlock`.
+
+**Découverte réelle en chemin — pourquoi `pluginval` ne peut PAS héberger un
+build RTSan.** Le step `pluginval --strictness-level 5 (RTSan build)` était
+rouge et l'aurait toujours été. Run **30437655033** :
+
+```
+==17045==ERROR: Interceptors are not working. This may be because RealtimeSanitizer
+is loaded too late (e.g. via dlopen). Please launch the executable with:
+DYLD_INSERT_LIBRARIES=/opt/homebrew/Cellar/llvm/22.1.8/lib/clang/22/lib/darwin/libclang_rt.rtsan_osx_dynamic.dylib
+"interceptors not installed" && 0
+pluginval received Abort trap: 6, exiting immediately
+```
+
+Un hôte pré-compilé n'a pas de runtime sanitizer à lui ; celui-ci n'arrive
+qu'au `dlopen` du plugin, après le démarrage du processus, trop tard pour
+poser ses intercepteurs. Le contournement que le sanitizer suggère lui-même
+(`DYLD_INSERT_LIBRARIES`) n'est pas retenu : dyld l'efface pour les binaires
+signés en hardened runtime, donc le résultat du check dépendrait de la façon
+dont Tracktion a signé sa release — un check dont le sens dépend de la
+signature d'un tiers ne vaut rien. Le step est **retiré**, remplacé par les
+deux proof hosts, eux-mêmes compilés avec `-fsanitize=realtime` : le runtime
+est alors dans l'image principale dès le lancement, et l'instrumentation du
+plugin chargé ensuite se résout sur ce même runtime déjà en place.
+
+**Témoin planté (le check ne peut pas devenir un no-op silencieux).** Un run
+RTSan qui passe et un run RTSan qui n'instrumente rien se ressemblent
+exactement de l'extérieur. Le CI relance donc le MÊME binaire avec
+`TUPLE_RTSAN_SABOTAGE=1`, qui arme un `malloc()` délibéré dans
+`processBlock` — code compilé uniquement sous `-DTUPLE_RTSAN=ON`, jamais dans
+un build livré. Ce run DOIT avorter avec un rapport RealtimeSanitizer ; s'il
+sort 0, le CI échoue en disant que l'annotation n'atteint pas le runtime et
+que le run propre ne prouvait rien.
+
+**Moitié statique de l'attribut** : l'analyse function-effects de Clang ne
+voit pas à travers la répartition virtuelle, donc les appels dans JUCE
+(`AudioPlayHead::getPosition()` et voisins) sortent « non prouvés », ce qui
+n'est pas « prouvés dangereux ». Le CI collecte ces diagnostics dans
+`proof/rtsan-function-effects-<os>.txt` et les remonte en `::warning::` — le
+signal bloquant reste le résultat runtime, pas cette liste.
 
 Windows : skip explicite et journalisé (`::notice::`), jamais silencieux,
-conforme à la demande du plan.
+conforme à la demande du plan. Le leg Windows compile et exécute quand même
+les deux proof hosts (sans sanitizer) — c'est ce qui garde la branche
+`_WIN32` de `clap_host_smoke.cpp` vivante maintenant qu'elle a une jumelle
+POSIX.
 
 ## Step 4 — clap-validator
 

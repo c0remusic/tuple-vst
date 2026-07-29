@@ -29,10 +29,15 @@ jobs:
       # fails hard with "could not find any instance of Visual Studio"). Let
       # CMake's default-generator detection pick whatever is really there
       # instead of hardcoding a version tied to when this file was written.
+      # TUPLE_BUILD_PROOF_HOSTS=ON here (it stays OFF for the macOS "build/"
+      # tree, whose proof-host coverage comes from "build-rtsan/" instead):
+      # tools/proof_hosts/clap_host_smoke.cpp now has a #if defined(_WIN32)
+      # branch, and the only way that branch stays compilable is if some leg of
+      # this matrix actually compiles it.
       - name: configure (Windows, MSVC, default generator)
         if: runner.os == 'Windows'
         shell: bash
-        run: cmake -B build -A x64 -DTUPLE_BUILD_PROOF_HOSTS=OFF
+        run: cmake -B build -A x64 -DTUPLE_BUILD_PROOF_HOSTS=ON
 
       - name: configure (macOS)
         if: runner.os == 'macOS'
@@ -131,18 +136,49 @@ jobs:
           fi
           echo "OK: RTSan caught the deliberate malloc() violation and aborted, as expected."
 
-      - name: RTSan coverage gap (honest, not swept under the rug)
-        if: runner.os == 'macOS'
+      # The coverage gap this step used to merely WARN about is closed:
+      # TupleProcessor::processBlock now carries TUPLE_NONBLOCKING
+      # ([[clang::nonblocking]], see source/plugin/RealtimeAnnotations.h), so
+      # the sanitizer is finally told which function is the real-time context.
+      # The step stays, inverted: it now FAILS if the annotation disappears,
+      # because losing it would turn every RTSan check below into a green no-op
+      # rather than an error.
+      #
+      # A scan that finds nothing and a scan that is broken produce the same
+      # output, so the file count is printed and a zero sweep is itself a
+      # failure -- the absence is only meaningful once the sweep is proven.
+      - name: RTSan annotation coverage (must find the audio-thread entry point)
+        if: always() && runner.os == 'macOS'
+        shell: bash
         run: |
-          echo "Repo-wide scan for [[clang::nonblocking]] outside .github/ and docs/ (proves the scan ran, not just that it found zero):"
-          hits=$(grep -rl "clang::nonblocking" source tests 2>/dev/null || true)
-          count=$(printf '%s\n' "$hits" | grep -c . || true)
-          echo "source/ + tests/ files scanned: $(find source tests -type f | wc -l | tr -d ' ') ; files with the annotation: $count"
-          if [ -z "$hits" ]; then
-            echo "::warning title=RTSan has zero coverage today::No file under source/ or tests/ carries [[clang::nonblocking]] yet (verified live above, not from memory). Below this step, the REAL TupleVST plugin (not a throwaway function) is now compiled with -DTUPLE_RTSAN=ON via this same brew LLVM and executed by pluginval, a real host -- so the sanitizer's instrumentation is genuinely present in the shipped code path and genuinely exercised by a host process. But with no annotated entry point (e.g. TupleProcessor::processBlock) the sanitizer's realtime-context flag is still never set, so it cannot flag a single real allocation/syscall/lock in Tuple's own code -- a green run there is proof the PIPELINE compiles and executes real Tuple code under the sanitizer, still NOT proof the audio thread is safe. Tracked gap, unchanged: annotate the real audio-thread entry point(s). Out of scope for this task (.github/workflows/ci.yml only, Task 5's files are already committed)."
-          else
-            echo "Annotated files: $hits"
+          scanned=$(find source tests -type f | wc -l | tr -d ' ')
+          echo "source/ + tests/ files swept: $scanned"
+          if [ "$scanned" -eq 0 ]; then
+            echo "::error title=Annotation scan is broken, not the code::The sweep covered 0 files under source/ and tests/. Refusing to draw any conclusion about annotation coverage from an empty scan."
+            exit 1
           fi
+
+          echo "Files carrying the annotation (directly or via the TUPLE_NONBLOCKING macro):"
+          { grep -rln "TUPLE_NONBLOCKING\|clang::nonblocking" source tests || true; } | tee rtsan-annotated-files.txt
+          count=$(wc -l < rtsan-annotated-files.txt | tr -d ' ')
+          echo "annotated files: $count"
+
+          if [ "$count" -eq 0 ]; then
+            echo "::error title=RTSan annotation vanished::No file under source/ or tests/ carries the annotation any more. Every RTSan step below would still go green while nothing is ever in real-time context."
+            exit 1
+          fi
+
+          # Named explicitly rather than "at least one file somewhere": the
+          # entry point is the whole point. RealtimeAnnotations.h alone
+          # matching would satisfy a bare count while processBlock sat
+          # unannotated.
+          for f in source/plugin/PluginProcessor.h source/plugin/PluginProcessor.cpp; do
+            if ! grep -q "TUPLE_NONBLOCKING" "$f"; then
+              echo "::error title=processBlock is no longer annotated::$f does not mention TUPLE_NONBLOCKING. The audio-thread entry point must carry it on BOTH its declaration and its definition (it is part of the function type)."
+              exit 1
+            fi
+          done
+          echo "OK: TupleProcessor::processBlock carries TUPLE_NONBLOCKING on declaration and definition."
 
       # --- Step 3 continued: TUPLE_RTSAN wired into an actual CI build -------
       # Corrects a real gap: the option existed in CMakeLists.txt since Task 1
@@ -166,28 +202,109 @@ jobs:
       # linking failed with: `llvm-ranlib: error: unable to load
       # 'libTuple_SharedCode.a': file too small to be an archive`. Pinning
       # both tools to the same Homebrew LLVM keg removes the mismatch.
-      - name: configure + build TupleVST (VST3) under RTSan (real code, real flags)
+      # TUPLE_BUILD_PROOF_HOSTS=ON here, unlike the plain "build/" tree: the two
+      # smoke hosts are the only hosts on this runner that CAN execute an
+      # RTSan-instrumented plugin, because CMakeLists.txt builds them with
+      # -fsanitize=realtime themselves, putting the sanitizer runtime in the
+      # main executable image at launch. A pre-built host cannot -- see the
+      # note where the old pluginval-on-RTSan step used to be.
+      - name: configure + build TupleVST + proof hosts under RTSan (real code, real flags)
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          set -e
+          mkdir -p proof
           cmake -B build-rtsan -DCMAKE_BUILD_TYPE=Release \
-            -DTUPLE_BUILD_PROOF_HOSTS=OFF -DTUPLE_RTSAN=ON \
+            -DTUPLE_BUILD_PROOF_HOSTS=ON -DTUPLE_RTSAN=ON \
             -DCMAKE_CXX_COMPILER="$LLVM_PREFIX/bin/clang++" \
             -DCMAKE_C_COMPILER="$LLVM_PREFIX/bin/clang" \
             -DCMAKE_AR="$LLVM_PREFIX/bin/llvm-ar" \
             -DCMAKE_RANLIB="$LLVM_PREFIX/bin/llvm-ranlib"
-          cmake --build build-rtsan --config Release --target TupleVST_VST3 --parallel
-          echo "OK: TupleVST_VST3 compiled and linked with -fsanitize=realtime, using $LLVM_PREFIX's clang++/clang/llvm-ar/llvm-ranlib throughout (verified via TUPLE_RTSAN's target_compile_options/target_link_options in CMakeLists.txt, not assumed)."
+          cmake --build build-rtsan --config Release \
+            --target TupleVST_VST3 TupleVST_CLAP TupleVST3HostSmoke TupleClapHostSmoke \
+            --parallel 2>&1 | tee proof/rtsan-build-${{ matrix.os }}.log
+          echo "OK: plugin (VST3 + CLAP) and both proof hosts compiled and linked with -fsanitize=realtime, using $LLVM_PREFIX's clang++/clang/llvm-ar/llvm-ranlib throughout."
 
-      - name: locate RTSan plugin artefact
+      # Clang's function-effects analysis is the COMPILE-TIME half of
+      # [[clang::nonblocking]]; the runtime sanitizer is the other half, and
+      # they fail independently (source/plugin/RealtimeAnnotations.h). This
+      # step surfaces the static half instead of letting it scroll past in a
+      # build log. It is deliberately NON-blocking: the analysis cannot see
+      # through virtual dispatch, so every call into JUCE (AudioPlayHead::
+      # getPosition() and friends) is "unproven", which is not the same claim
+      # as "unsafe". The blocking signal is the runtime result below.
+      - name: function-effects diagnostics from the RTSan build (informational)
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          log="proof/rtsan-build-${{ matrix.os }}.log"
+          out="proof/rtsan-function-effects-${{ matrix.os }}.txt"
+          if [ ! -f "$log" ]; then
+            echo "::error::no RTSan build log at $log -- the build step above did not run to completion, so this summary would be silently empty."
+            exit 1
+          fi
+          { grep -n "function-effects\|nonblocking\|nonallocating" "$log" || true; } | tee "$out"
+          n=$(wc -l < "$out" | tr -d ' ')
+          echo "function-effects diagnostic lines: $n"
+          if [ "$n" -gt 0 ]; then
+            echo "::warning title=Clang could not statically prove $n line(s) of call sites non-blocking::'Unproven', not 'proven unsafe' -- the analysis stops at JUCE's virtual dispatch. Full list uploaded as $out. The bloquant signal for the audio-thread invariants is the runtime RTSan result in the steps below."
+          else
+            echo "Clang raised no function-effects diagnostic on this build."
+          fi
+
+      - name: run proof hosts against the RTSan build (real execution of processBlock)
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          set -e
-          vst3_rtsan="build-rtsan/TupleVST_artefacts/Release/VST3/Tuple.vst3"
-          [ -e "$vst3_rtsan" ] || { echo "::error::RTSan VST3 artefact not found at $vst3_rtsan"; exit 1; }
-          echo "VST3_PATH_RTSAN=$vst3_rtsan" >> "$GITHUB_ENV"
+          mkdir -p proof
+          vst3="build-rtsan/TupleVST_artefacts/Release/VST3/Tuple.vst3"
+          clap="build-rtsan/TupleVST_artefacts/Release/CLAP/Tuple.clap"
+          vst3host="build-rtsan/TupleVST3HostSmoke_artefacts/Release/TupleVST3HostSmoke"
+          claphost="build-rtsan/TupleClapHostSmoke"
+          for p in "$vst3" "$clap" "$vst3host" "$claphost"; do
+            if [ ! -e "$p" ]; then
+              echo "::error::RTSan build artefact missing: $p"
+              find build-rtsan -maxdepth 4 -name 'Tuple*' | head -40
+              exit 1
+            fi
+          done
+          echo "RTSAN_VST3=$vst3" >> "$GITHUB_ENV"
+          echo "RTSAN_VST3_HOST=$vst3host" >> "$GITHUB_ENV"
+
+          echo "::group::VST3 proof host, RTSan build"
+          "$vst3host" "$vst3" 2>&1 | tee "proof/rtsan-vst3-host-smoke-${{ matrix.os }}.txt"
+          echo "::endgroup::"
+
+          echo "::group::CLAP proof host, RTSan build"
+          "$claphost" "$clap" 2>&1 | tee "proof/rtsan-clap-host-smoke-${{ matrix.os }}.txt"
+          echo "::endgroup::"
+
+          echo "OK: both formats loaded, TupleProcessor::processBlock executed end-to-end with RealtimeSanitizer active, no violation reported."
+
+      # A passing RTSan run and a RTSan run that instruments nothing look
+      # identical from outside. This step plants a witness so they cannot:
+      # the SAME binary that just exited 0 is re-run with TUPLE_RTSAN_SABOTAGE
+      # set, which arms a deliberate malloc() inside processBlock (compiled in
+      # only under -DTUPLE_RTSAN=ON, never in a shipped build -- see
+      # PluginProcessor.h). If that run does NOT abort, the annotation is not
+      # reaching the runtime and the clean run above proved nothing.
+      - name: RTSan witness -- the same binary must abort when sabotage is armed
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set +e
+          out="proof/rtsan-sabotage-${{ matrix.os }}.txt"
+          TUPLE_RTSAN_SABOTAGE=1 "$RTSAN_VST3_HOST" "$RTSAN_VST3" > "$out" 2>&1
+          rc=$?
+          cat "$out"
+          if [ "$rc" -eq 0 ]; then
+            echo "::error title=RTSan instrumentation is not reaching Tuple's code::The armed sabotage run exited 0. A malloc() inside TupleProcessor::processBlock was NOT caught, so the [[clang::nonblocking]] context is never entered and every other RTSan result in this run is untrustworthy."
+            exit 1
+          fi
+          if ! grep -q "RealtimeSanitizer" "$out"; then
+            echo "::error title=Sabotage run aborted for the wrong reason::exit code $rc but no RealtimeSanitizer report in the output. Something other than the sanitizer killed it; treat this as a broken check, not a pass."
+            exit 1
+          fi
+          echo "OK: armed run aborted with a RealtimeSanitizer report (exit $rc). The annotation reaches the runtime in the real plugin, so the clean run above is a real result."
 
       # --- Steps 4 & 5: the actual shipped plugin, both formats -------------
       #
@@ -221,6 +338,35 @@ jobs:
           echo "VST3_PATH=$vst3" >> "$GITHUB_ENV"
           echo "CLAP_PATH=$clap" >> "$GITHUB_ENV"
           mkdir -p proof
+
+      # Windows is where RTSan does NOT exist, so this leg cannot prove
+      # anything about the audio thread. What it does prove is that the
+      # _WIN32 branch of tools/proof_hosts/clap_host_smoke.cpp still compiles
+      # and still loads both formats after the dlopen/dlsym port -- otherwise
+      # that branch would only ever be exercised on a dev machine, by hand,
+      # which is how it drifted into "Windows-only, macOS pending" in the
+      # first place.
+      - name: proof hosts (Windows, no sanitizer -- load path only)
+        if: always() && runner.os == 'Windows'
+        shell: bash
+        run: |
+          cmake --build build --config Release \
+            --target TupleVST3HostSmoke TupleClapHostSmoke --parallel
+          vst3host="build/TupleVST3HostSmoke_artefacts/Release/TupleVST3HostSmoke.exe"
+          claphost="build/Release/TupleClapHostSmoke.exe"
+          for p in "$vst3host" "$claphost"; do
+            if [ ! -e "$p" ]; then
+              echo "::error::proof host binary missing: $p"
+              find build -maxdepth 4 -iname '*HostSmoke*' | head -20
+              exit 1
+            fi
+          done
+          echo "::group::VST3 proof host"
+          "$vst3host" "$VST3_PATH" 2>&1 | tee "proof/host-smoke-vst3-${{ matrix.os }}.txt"
+          echo "::endgroup::"
+          echo "::group::CLAP proof host"
+          "$claphost" "$CLAP_PATH" 2>&1 | tee "proof/host-smoke-clap-${{ matrix.os }}.txt"
+          echo "::endgroup::"
 
       - name: download clap-validator (latest release)
         if: always()
@@ -325,27 +471,32 @@ jobs:
           status=$?
           exit $status
 
-      # --- Step 3, closing the loop: a real host executes the RTSan build ---
-      # clap-validator is deliberately NOT run against build-rtsan: its
-      # state-reproducibility failures (Step 4 above) are an already-tracked,
-      # unrelated Task 4 bug that reproduces regardless of any sanitizer, so
-      # running it a second time here would only add a duplicate, misleading
-      # red under the RTSan step's name. pluginval currently passes clean on
-      # the non-RTSan build, so a pass/fail here is a meaningful signal about
-      # THIS build, not noise from a bug this task does not own.
-      - name: pluginval --strictness-level 5 (RTSan build)
-        if: always() && runner.os == 'macOS' && steps.download_pluginval.outcome == 'success'
-        shell: bash
-        run: |
-          set -o pipefail
-          mkdir -p proof
-          if [ -z "$VST3_PATH_RTSAN" ] || [ ! -e "$VST3_PATH_RTSAN" ]; then
-            echo "::error::pluginval (RTSan build): no VST3 artefact to validate (VST3_PATH_RTSAN='$VST3_PATH_RTSAN') -- the RTSan build/locate step above did not produce one. Reporting as a failed check, not a silent skip."
-            exit 1
-          fi
-          "$PLUGINVAL" --strictness-level 5 --validate "$VST3_PATH_RTSAN" 2>&1 | tee proof/pluginval-rtsan-${{ matrix.os }}.txt
-          status=$?
-          exit $status
+      # --- Removed: "pluginval --strictness-level 5 (RTSan build)" ------------
+      #
+      # It ran here until 2026-07-29 and could never have worked. A pre-built
+      # host has no sanitizer runtime of its own, so RealtimeSanitizer only
+      # arrives when the host dlopen()s the instrumented plugin -- far too late
+      # to install its interceptors. Measured, not reasoned: run 30437655033,
+      # `pluginval --strictness-level 5 --validate build-rtsan/.../Tuple.vst3`
+      #
+      #   ==17045==ERROR: Interceptors are not working. This may be because
+      #   RealtimeSanitizer is loaded too late (e.g. via dlopen). Please launch
+      #   the executable with:
+      #   DYLD_INSERT_LIBRARIES=.../libclang_rt.rtsan_osx_dynamic.dylib
+      #   "interceptors not installed" && 0
+      #   pluginval received Abort trap: 6, exiting immediately
+      #
+      # The sanitizer's own suggested workaround (DYLD_INSERT_LIBRARIES) is not
+      # used: dyld strips DYLD_* for hardened-runtime/signed binaries, so a
+      # downloaded pluginval.app would make this check pass or vanish depending
+      # on how Tracktion signed that release -- a check whose meaning depends on
+      # someone else's codesigning is worse than no check.
+      #
+      # What replaces it is strictly stronger, not a downgrade: the two proof
+      # hosts above are built WITH -fsanitize=realtime, so the runtime is in the
+      # main image from launch, and they exercise both formats through the real
+      # plugin API rather than one. pluginval still runs at strictness 5 against
+      # the ordinary (non-RTSan) build, unchanged, as its own bloquant check.
 
       - name: upload proof/ for this run
         if: always()

@@ -42,8 +42,30 @@ le `.vst3`/`.clap` livré) :
   `prepareToPlay` → `processBlock` → `releaseResources` → destruction.
 - `tools/proof_hosts/clap_host_smoke.cpp` — charge `Tuple.clap` via l'ABI C
   CLAP brute (`clap_entry` → `get_factory` → `create_plugin` → `init` →
-  `activate` → `start_processing` → `stop_processing` → `deactivate` →
-  `destroy` → `deinit`), la même séquence que tout hôte CLAP.
+  `activate` → `start_processing` → `process` → `stop_processing` →
+  `deactivate` → `destroy` → `deinit`), la même séquence que tout hôte CLAP.
+
+**Portage multiplateforme (2026-07-29).** Les deux hôtes étaient bâtis
+Windows-only (`if(TUPLE_BUILD_PROOF_HOSTS AND WIN32)`). Désormais :
+
+- `clap_host_smoke.cpp` a une branche `dlopen`/`dlsym` en regard de sa
+  branche `LoadLibrary`/`GetProcAddress`, et résout le bundle macOS
+  (`Tuple.clap/Contents/MacOS/<binaire>`) avant de charger — `dlopen` sur le
+  `.clap` échoue, c'est un répertoire. Le chemin du bundle d'origine reste
+  celui passé à `clap_entry->init()`, comme le veut la spec CLAP.
+- `vst3_host_smoke.cpp` n'a pas changé de mécanique : il n'utilisait aucune
+  API Win32 (les classes d'hébergement JUCE sont multiplateformes), il était
+  seulement pris dans le même garde `AND WIN32`.
+- L'appel `process()` ajouté côté CLAP n'est pas cosmétique : sans lui la
+  séquence s'arrêtait à `start_processing` et n'entrait jamais dans
+  `TupleProcessor::processBlock`.
+
+Motif : macOS est la SEULE plateforme où `-fsanitize=realtime` existe
+(rejeté par clang-cl pour `x86_64-pc-windows-msvc`), donc tant que ces hôtes
+ne tournaient pas sur macOS, aucun hôte sous notre contrôle ne pouvait
+exécuter `processBlock` avec RealtimeSanitizer actif. Voir
+`proof/task7-ci.md` § Step 3 pour la suite (et pourquoi un hôte pré-compilé
+comme pluginval ne peut pas jouer ce rôle).
 
 Les deux sont construits et exécutés depuis le dossier vierge ci-dessus,
 contre les binaires fraîchement compilés dans ce même dossier :

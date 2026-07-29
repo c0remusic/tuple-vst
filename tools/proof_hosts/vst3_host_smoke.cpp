@@ -20,6 +20,18 @@
 //
 // JUCE_PLUGINHOST_VST3 is defined only for THIS target (see CMakeLists.txt).
 // The shipped TupleVST target never links the hosting side of JUCE.
+//
+// PORTABILITY (2026-07-29): this file never used a Win32 API — JUCE's hosting
+// classes are cross-platform — but CMakeLists.txt used to gate BOTH proof
+// hosts behind `AND WIN32` because its sibling, clap_host_smoke.cpp, did. That
+// gate is gone now that the sibling is ported, so this runs on macOS too,
+// which matters for one specific reason: macOS is the only platform where
+// RealtimeSanitizer exists, and when this program is itself built with
+// -fsanitize=realtime it becomes the host that can legitimately execute an
+// RTSan-instrumented plugin. A pre-built host cannot: the sanitizer runtime
+// would arrive via the plugin's own dlopen, too late to install its
+// interceptors, and abort ("Interceptors are not working", observed on CI run
+// 30437655033 with pluginval). See .github/workflows/ci.yml, Step 3.
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_events/juce_events.h>
