@@ -86,7 +86,10 @@ jobs:
           echo "::notice title=RTSan skipped on Windows::-fsanitize=realtime is rejected by clang-cl 20.1.8 for target x86_64-pc-windows-msvc ('unsupported option'), verified against this exact runner image on 2026-07-29. RealtimeSanitizer has no Windows/MSVC-ABI target support upstream. This is a known, permanent constraint of this runner, not a flake -- macOS is the only leg of this matrix that runs RTSan."
 
       - name: install a real LLVM (macOS system clang cannot build RTSan)
-        if: runner.os == 'macOS'
+        # always(): this is the entry point of the RTSan check group, which
+        # must run independently of Step 2 (fast tests) failing -- see the
+        # "no single failure hides another check" note on Steps 4/5 below.
+        if: always() && runner.os == 'macOS'
         run: |
           brew install llvm
           echo "LLVM_PREFIX=$(brew --prefix llvm)" >> "$GITHUB_ENV"
@@ -151,6 +154,18 @@ jobs:
       # validator/pluginval's Steps 4/5 -- already relies on) avoids any risk
       # of reusing object files compiled by a different compiler than the one
       # actually configured this run.
+      #
+      # CMAKE_AR/CMAKE_RANLIB must be forced too, not just the compilers.
+      # Diagnosed live on run 30433235344: forcing only CMAKE_CXX_COMPILER/
+      # CMAKE_C_COMPILER let CMake's own compiler-adjacent detection resolve
+      # CMAKE_RANLIB to the Homebrew keg's llvm-ranlib, but CMAKE_AR still
+      # fell back to Apple's /usr/bin/ar (the Homebrew llvm keg is keg-only,
+      # not on PATH -- see the "install a real LLVM" step's brew output --
+      # so a plain `ar` lookup never finds Homebrew's copy). Apple's ar and
+      # Homebrew's llvm-ranlib disagree on the archive it produced, and
+      # linking failed with: `llvm-ranlib: error: unable to load
+      # 'libTuple_SharedCode.a': file too small to be an archive`. Pinning
+      # both tools to the same Homebrew LLVM keg removes the mismatch.
       - name: configure + build TupleVST (VST3) under RTSan (real code, real flags)
         if: runner.os == 'macOS'
         shell: bash
@@ -159,9 +174,11 @@ jobs:
           cmake -B build-rtsan -DCMAKE_BUILD_TYPE=Release \
             -DTUPLE_BUILD_PROOF_HOSTS=OFF -DTUPLE_RTSAN=ON \
             -DCMAKE_CXX_COMPILER="$LLVM_PREFIX/bin/clang++" \
-            -DCMAKE_C_COMPILER="$LLVM_PREFIX/bin/clang"
+            -DCMAKE_C_COMPILER="$LLVM_PREFIX/bin/clang" \
+            -DCMAKE_AR="$LLVM_PREFIX/bin/llvm-ar" \
+            -DCMAKE_RANLIB="$LLVM_PREFIX/bin/llvm-ranlib"
           cmake --build build-rtsan --config Release --target TupleVST_VST3 --parallel
-          echo "OK: TupleVST_VST3 compiled and linked with -fsanitize=realtime (verified via TUPLE_RTSAN's target_compile_options/target_link_options in CMakeLists.txt, not assumed)."
+          echo "OK: TupleVST_VST3 compiled and linked with -fsanitize=realtime, using $LLVM_PREFIX's clang++/clang/llvm-ar/llvm-ranlib throughout (verified via TUPLE_RTSAN's target_compile_options/target_link_options in CMakeLists.txt, not assumed)."
 
       - name: locate RTSan plugin artefact
         if: runner.os == 'macOS'
@@ -173,11 +190,27 @@ jobs:
           echo "VST3_PATH_RTSAN=$vst3_rtsan" >> "$GITHUB_ENV"
 
       # --- Steps 4 & 5: the actual shipped plugin, both formats -------------
+      #
+      # always() on this step and everything through the pluginval steps
+      # below: these are independent bloquant checks from RTSan (Step 3) and
+      # from the fast tests (Step 2) -- they build from "build/", a tree
+      # RTSan's own "build-rtsan/" never touches -- so a failure in either of
+      # those must not hide whether the plugin itself still builds and
+      # validates. Verified live on run 30433235344: without always() here,
+      # RTSan's link failure on macOS skipped every step below it, including
+      # this one, clap-validator, and pluginval -- three previously-working
+      # checks going dark with zero signal. If "build" itself was never
+      # configured (e.g. the configure step upstream genuinely failed), this
+      # step now fails loudly with cmake's own error instead of silently
+      # skipping -- that IS a genuine dependency, not the bug above, but it
+      # must still be a visible failure, not a skip.
       - name: build plugin formats (VST3 + CLAP)
+        if: always()
         shell: bash
         run: cmake --build build --config Release --target TupleVST_VST3 TupleVST_CLAP --parallel
 
       - name: locate plugin artefacts
+        if: always()
         shell: bash
         run: |
           set -e
@@ -190,6 +223,7 @@ jobs:
           mkdir -p proof
 
       - name: download clap-validator (latest release)
+        if: always()
         shell: bash
         run: |
           set -e
@@ -217,6 +251,7 @@ jobs:
 
       - name: download pluginval (latest release)
         id: download_pluginval
+        if: always()
         shell: bash
         run: |
           set -e
@@ -239,10 +274,27 @@ jobs:
           echo "PLUGINVAL=$bin" >> "$GITHUB_ENV"
 
       # --- Step 4: clap-validator on the .clap, bloquant ---------------------
+      # always(): independent bloquant check, same reasoning as Steps 4/5
+      # above -- must still run (and report) even if RTSan or the fast tests
+      # failed earlier in the job. Its own genuine dependency is the CLAP
+      # artefact from "locate plugin artefacts" above; if that step didn't
+      # run to completion, CLAP_PATH/CLAP_VALIDATOR are unset here -- guarded
+      # explicitly below so that shows up as a clear ::error::, not a
+      # confusing "no such file" from clap-validator itself or a silent skip.
       - name: clap-validator validate
+        if: always()
         shell: bash
         run: |
           set -o pipefail
+          mkdir -p proof
+          if [ -z "$CLAP_PATH" ] || [ ! -e "$CLAP_PATH" ]; then
+            echo "::error::clap-validator validate: no CLAP artefact to validate (CLAP_PATH='$CLAP_PATH') -- the build/locate step above did not produce one. Reporting as a failed check, not a silent skip."
+            exit 1
+          fi
+          if [ -z "$CLAP_VALIDATOR" ] || [ ! -x "$CLAP_VALIDATOR" ]; then
+            echo "::error::clap-validator validate: clap-validator binary unavailable (CLAP_VALIDATOR='$CLAP_VALIDATOR') -- the download step above did not succeed."
+            exit 1
+          fi
           "$CLAP_VALIDATOR" validate "$CLAP_PATH" 2>&1 | tee proof/clap-validator-${{ matrix.os }}.txt
           status=$?
           exit $status
@@ -264,6 +316,11 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
+          mkdir -p proof
+          if [ -z "$VST3_PATH" ] || [ ! -e "$VST3_PATH" ]; then
+            echo "::error::pluginval: no VST3 artefact to validate (VST3_PATH='$VST3_PATH') -- the build/locate step above did not produce one. Reporting as a failed check, not a silent skip."
+            exit 1
+          fi
           "$PLUGINVAL" --strictness-level 5 --validate "$VST3_PATH" 2>&1 | tee proof/pluginval-${{ matrix.os }}.txt
           status=$?
           exit $status
@@ -281,6 +338,11 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
+          mkdir -p proof
+          if [ -z "$VST3_PATH_RTSAN" ] || [ ! -e "$VST3_PATH_RTSAN" ]; then
+            echo "::error::pluginval (RTSan build): no VST3 artefact to validate (VST3_PATH_RTSAN='$VST3_PATH_RTSAN') -- the RTSan build/locate step above did not produce one. Reporting as a failed check, not a silent skip."
+            exit 1
+          fi
           "$PLUGINVAL" --strictness-level 5 --validate "$VST3_PATH_RTSAN" 2>&1 | tee proof/pluginval-rtsan-${{ matrix.os }}.txt
           status=$?
           exit $status
