@@ -115,8 +115,21 @@ target_link_libraries(TupleVST PRIVATE
 
 if(TUPLE_RTSAN)
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        target_compile_options(TupleVST PRIVATE -fsanitize=realtime)
-        target_link_options(TupleVST PRIVATE -fsanitize=realtime)
+        # PUBLIC, not PRIVATE: juce_add_plugin() wraps TupleVST (a static
+        # "shared code" library) into per-format targets (TupleVST_VST3,
+        # TupleVST_CLAP, ...) that do the actual final link into the .vst3/
+        # .clap bundle. PRIVATE options only affect TupleVST's own build --
+        # they never reach that final link step. Confirmed live on CI run
+        # 30434368002: with PRIVATE, the static lib compiled and archived
+        # fine (rtsan instrumentation calls present in the .o files), but
+        # linking TupleVST_VST3's final module failed with "Undefined
+        # symbols ... ___rtsan_ensure_initialized" -- the compile flag alone
+        # references the sanitizer runtime; only a PUBLIC (propagated)
+        # link option makes the wrapper target's own link command pass
+        # -fsanitize=realtime too, which is what actually pulls the
+        # RealtimeSanitizer runtime into the final binary.
+        target_compile_options(TupleVST PUBLIC -fsanitize=realtime)
+        target_link_options(TupleVST PUBLIC -fsanitize=realtime)
     else()
         message(WARNING "TUPLE_RTSAN is ON but compiler '${CMAKE_CXX_COMPILER_ID}' "
                          "does not support -fsanitize=realtime (Clang >= 20 required). Ignoring.")
