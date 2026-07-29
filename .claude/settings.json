@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json.schemastudio.com/claude-code-settings",
+  "permissions": {
+    "deny": [
+      "Read(**/build/**)",
+      "Read(**/*.vst3/**)",
+      "Read(**/*.clap/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/guard-layers.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
