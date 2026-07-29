@@ -185,6 +185,7 @@ jobs:
           echo "CLAP_VALIDATOR=$bin" >> "$GITHUB_ENV"
 
       - name: download pluginval (latest release)
+        id: download_pluginval
         shell: bash
         run: |
           set -e
@@ -223,8 +224,12 @@ jobs:
         # Independent of clap-validator's result: both are their own
         # bloquant check (Steps 4 and 5), and one failing must not hide
         # whether the other also would have. The job as a whole still
-        # reports failure if either step failed.
-        if: always()
+        # reports failure if either step failed. Gated on the download step
+        # specifically (not a bare always()) -- verified 2026-07-29: a bare
+        # always() here ran with $PLUGINVAL unset whenever an EARLIER step
+        # (e.g. Step 2's tests) had already failed, producing a confusing
+        # "command not found" (exit 127) instead of a clean skip.
+        if: always() && steps.download_pluginval.outcome == 'success'
         shell: bash
         run: |
           set -o pipefail
