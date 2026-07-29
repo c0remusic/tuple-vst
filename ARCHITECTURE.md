@@ -1,80 +1,99 @@
 # ARCHITECTURE — Tuple VST
 
-**Date : 2026-07-29.** Chaque choix ci-dessous est adossé à une vérification
-datée. Ce qui n'a pas été vérifié est marqué comme tel.
+**Date : 2026-07-29.** Chaque choix est adossé à une vérification datée. Ce qui
+n'a pas été vérifié est marqué comme tel.
 
 Ce document décrit **le COMMENT**. Le QUOI vit dans `PRD.md`.
+
+> **Le VST repart de zéro.** Le device Max for Live sert de **référence
+> fonctionnelle** — on s'en inspire pour décider quoi construire. Aucun code
+> n'en est repris par défaut ; toute reprise éventuelle serait une décision
+> explicite.
 
 ---
 
 ## 1. Vue d'ensemble
 
-Un cœur de logique musicale en **Rust**, pur et sans dépendance, exposé par une
-frontière **C ABI**, consommé par trois frontends :
+**Un seul langage, une seule chaîne de build : C++17 / JUCE 9.**
 
 ```
-                      ┌──────────────────────────┐
-                      │  crates/harmony (Rust)   │
-                      │  no_std · zéro dépendance│
-                      │  spec → notes            │
-                      └────────────┬─────────────┘
-                                   │  C ABI (40 lignes)
-              ┌────────────────────┼────────────────────┐
-              │                    │                    │
-    ┌─────────▼────────┐  ┌────────▼────────┐  ┌────────▼────────┐
-    │ plugin/ (JUCE)   │  │ audition (WASM) │  │ mid-export (CLI)│
-    │ VST3 · CLAP      │  │ navigateur      │  │ .mid            │
-    │ le produit       │  │ boucle d'écoute │  │ témoin de preuve│
-    └──────────────────┘  └─────────────────┘  └─────────────────┘
+                  ┌───────────────────────────┐
+                  │  harmony/  (C++ pur)      │
+                  │  aucune dépendance JUCE   │
+                  │  spec → notes             │
+                  └────────────┬──────────────┘
+                               │  appel direct (pas de frontière)
+              ┌────────────────┼────────────────┐
+              │                                 │
+    ┌─────────▼──────────┐            ┌─────────▼──────────┐
+    │ PluginProcessor    │            │ tests/             │
+    │ thread audio       │            │ corpus de fixtures │
+    │ VST3 · CLAP        │            │ boucle rapide      │
+    └────────────────────┘            └────────────────────┘
+              │
+    ┌─────────▼──────────┐
+    │ PluginEditor       │
+    │ UI native JUCE     │
+    └────────────────────┘
 ```
 
-**La couture unique** est `spec → notes` : une spécification d'accord (hauteurs
-et rôles harmoniques, sans octaves) entre, des notes MIDI sortent. Elle survit à
-la refonte du moteur de voicing, qui se fait **derrière** elle sans toucher aux
-frontends.
+**La couture** reste `spec → notes` : une spécification d'accord (hauteurs et
+rôles harmoniques, sans octaves) entre, des notes MIDI sortent. Elle est ici une
+**frontière de classe C++**, pas une frontière de langage.
 
-**Pourquoi trois frontends et pas un.** Concevoir un système de voicing est une
-activité d'oreille : il faut écouter très souvent. La cible WASM rend la boucle
-d'écoute instantanée dans un navigateur, alors que la boucle par le plugin est
-compiler → bundler → recharger le DAW. Le `.wasm` mesuré fait **997 octets** et
-n'importe aucune fonction hôte.
+**`harmony/` ne dépend pas de JUCE.** C'est ce qui le rend testable par un
+binaire de test qui démarre en une seconde, sans hôte audio. C'est la seule
+boucle rapide du projet.
+
+### Les deux boucles, et leur vitesse réelle
+
+| boucle | ce qu'elle valide | coût |
+|---|---|---|
+| `harmony/` + corpus de fixtures | la **correction** : les bonnes notes, de façon déterministe | compilation d'un binaire de test, quelques secondes |
+| plugin chargé dans un DAW | le **goût** : est-ce que ça sonne, est-ce que ça se joue | compiler, bundler, recharger l'hôte, rejouer |
+
+⚠️ **Il n'y a pas de boucle rapide pour l'oreille.** Les deux options envisagées
+— module WebAssembly auditionné au navigateur, et cible standalone JUCE — ont
+été écartées. Concevoir un système de voicing est une activité d'oreille : cette
+lenteur est un coût assumé, pas un oubli.
 
 ---
 
-## 2. La stack, couche par couche
+## 2. La stack
 
-| couche | technologie | licence | pourquoi |
+| couche | technologie | licence | note |
 |---|---|---|---|
-| Cœur harmonique | **Rust** 1.96+, edition 2021, `no_std` | — | Une erreur de mémoire ne compile pas ; compilable en WASM pour la boucle d'écoute ; le cœur fermé du produit est dans le langage le plus sûr des deux. |
-| Frontière | **C ABI** (`extern "C"`, types POD) | — | Mesurée à **+0,64 ns/appel** en lien statique. Même couche pour les trois frontends, sans variante. |
-| Plugin et UI | **C++17 / JUCE 9** | JUCE (voir §3) | Écosystème le plus documenté du domaine ; UI native mature ; standalone fourni ; AU disponible plus tard. |
-| Format CLAP | **clap-juce-extensions** ou **clap-wrapper** | MIT | ⚠️ **JUCE ne produit pas de CLAP nativement.** |
-| Build C++ | **CMake** + MSVC 14.44 (`vcvars64.bat`) | — | Voie recommandée par JUCE. MSVC et MSBuild sont déjà installés sur la machine de dev. |
-| Build Rust | **cargo** | — | — |
+| Tout le code | **C++17**, **JUCE 9** | JUCE (voir §3) | Un langage, un écosystème, une chaîne de build. |
+| Formats | **VST3** + **CLAP** | — | ⚠️ **JUCE ne produit pas de CLAP nativement** : il faut `clap-juce-extensions` ou `clap-wrapper`, tous deux MIT. |
+| Build | **CMake** | — | Voie recommandée par JUCE. |
+| Compilateurs | **MSVC 14.44** (Windows) · **Clang/Xcode** (macOS) | — | MSVC et MSBuild déjà installés côté Windows. |
+| Paramètres et état | `AudioProcessorValueTreeState` | JUCE | Le pont thread-safe imposé par JUCE entre l'UI et le thread audio. Accès atomique, automation, presets, sans lock sur le thread audio. |
+| UI | Composants natifs JUCE | JUCE | L'UI est reconstruite de zéro (voir `PRD.md`). |
+| Preuve temps réel | **RealtimeSanitizer** (`-fsanitize=realtime`, Clang ≥ 20) | — | Couvre allocations, syscalls, locks et exceptions. Disponible sur les deux plateformes. |
 | Validation | **clap-validator**, **pluginval** | MIT | Le premier est le seul validateur dont la couverture note on/off et événements MIDI est documentée. |
 
-### Pourquoi pas Rust de bout en bout
+### Pourquoi pas un cœur en Rust
 
-`nice-plug` (le fork maintenu de `nih-plug`) est propre côté licence et fournit
-params, state, smoothing, bundler et standalone. Mais son propre README écrit :
-« *None of these options currently have good documentation for how to create
-plugin GUIs* ». L'UI étant reconstruite de zéro et destinée à beaucoup changer,
-la maturité de l'UI native pèse plus que l'unicité du langage.
+Option envisagée puis écartée le 2026-07-29. Ce qui la portait était la
+compilation du cœur en WebAssembly pour auditionner le voicing au navigateur ;
+cette boucle n'est pas jugée utile. Ce qui restait — sûreté mémoire sur le cœur —
+ne compensait pas deux langages, deux chaînes de build et une frontière FFI
+**non vérifiée sur macOS**, dans un binôme dont un développeur débute.
 
-### Pourquoi pas C++ de bout en bout
+Mesures conservées pour mémoire, elles n'ont pas départagé : la frontière C ABI
+coûtait **+0,64 ns/appel** en lien statique contre un budget de callback de
+**2,67 ms** à 48 kHz en buffer 128. La latence ne dépendait pas du langage.
 
-Aucun argument de latence ne le soutient. Mesuré sur la fonction de voicing :
-Rust/LLVM **17,7 ns/appel** contre **24,4 ns** pour sa transcription C++/MSVC —
-un écart de 6,7 ns, soit **six fois le coût de la frontière**. ⚠️ Ce chiffre
-documente MSVC contre LLVM sur une fonction précise, sans LTCG ni PGO côté
-MSVC ; ce n'est pas « Rust est plus rapide que C++ ». Il établit seulement que
-la latence ne départage pas.
+⚠️ **Coût réel de cet abandon** : on perd `cargo deny check licenses`, un garde-fou
+**mécanique** qui bloquait toute dépendance copyleft, y compris transitive, et
+dont la capacité à refuser avait été prouvée. En C++, la protection du §4 redevient
+de la **discipline vérifiable à la revue**, pas une commande qui échoue.
 
 ---
 
 ## 3. Licence JUCE — coût et pièges
 
-Vérifié le 2026-07-29 sur l'EULA elle-même, pas sur la page marketing.
+Vérifié le 2026-07-29 sur l'EULA, pas sur la page marketing.
 
 | tier | plafond de revenu / financement | par développeur | à deux |
 |---|---|---|---|
@@ -84,185 +103,158 @@ Vérifié le 2026-07-29 sur l'EULA elle-même, pas sur la page marketing.
 
 - **Source fermée autorisée à tous les tiers**, Starter compris.
 - **Aucun splash screen.** Le mécanisme a été supprimé du code en JUCE 8 : le
-  fichier `juce_JUCESplashScreen.h` renvoie 404 au tag `8.0.9`, et un
+  fichier `juce_JUCESplashScreen.h` renvoie 404 au tag `8.0.9` et un
   avertissement de compilation signale que le flag est ignoré. Aucune clause
   d'attribution visuelle dans l'EULA.
-- **Une licence par développeur** touchant au code, prestataires compris. Deux
-  personnes = deux sièges. Les machines de build et de test n'en consomment pas.
+- **Une licence par développeur** touchant au code. Deux personnes = deux sièges.
+  Les machines de build et de test n'en consomment pas.
 - ⚠️ **Le plafond porte sur le revenu de l'entité entière.** Pour une personne
   physique, c'est le revenu tiré de l'usage du framework. Pour une société,
-  c'est « *the total revenue or funding received by the entity and all its
-  Affiliates … from all sources, whether it be received in connection with the
-  entity's use of the Framework or not, without offsets of any kind* ». **La
-  forme juridique choisie pour se répartir les revenus change le tier à payer.**
+  « *the total revenue or funding received by the entity and all its Affiliates …
+  from all sources, whether it be received in connection with the entity's use of
+  the Framework or not, without offsets of any kind* ». **La forme juridique
+  choisie pour se répartir les revenus change le tier à payer.**
 - ⚠️ **Sur abonnement, cesser de payer oblige à cesser de distribuer**, sauf
   rachat en perpétuel.
-- Une licence perpétuelle ne couvre **qu'une version majeure** (JUCE 9 → 10 est
-  un upgrade, remise de 30 % pour les détenteurs antérieurs).
-- L'alternative copyleft est **AGPLv3** depuis JUCE 8 (c'était GPLv3 avant).
-  On ne la choisit pas.
+- Une licence perpétuelle ne couvre **qu'une version majeure**.
+- L'alternative copyleft est **AGPLv3** depuis JUCE 8. On ne la choisit pas.
 
-### Pourquoi JUCE 9 et pas 8
-
-Le SDK VST3 embarqué dans JUCE **8.0.9** est encore en double licence
-propriétaire/GPLv3 et sa voie propriétaire exige « *a copy of the License
-Agreement signed by Steinberg* ». Celui de JUCE **9** est **MIT**. Même prix,
-même EULA — une formalité en moins.
+**Pourquoi JUCE 9 et pas 8** : le SDK VST3 embarqué dans **8.0.9** est encore en
+double licence propriétaire/GPLv3 et sa voie propriétaire exige « *a copy of the
+License Agreement signed by Steinberg* ». Celui de **JUCE 9** est **MIT**. Même
+prix, même EULA, une formalité en moins.
 
 ⚠️ **Les modules ISC ont disparu.** En JUCE 7, `juce_core`, `juce_events`,
 `juce_audio_basics` et `juce_audio_devices` étaient sous ISC. Cette phrase est
-absente de `LICENSE.md` en 8 et 9 : **toute la bibliothèque est désormais sous le
-même régime**.
+absente de `LICENSE.md` en 8 et 9 : **toute la bibliothèque est sous le même
+régime**.
 
 ---
 
-## 4. Politique de licence — la contrainte absolue
+## 4. Politique de licence
 
 **Aucune dépendance copyleft, même transitive.** Le produit est fermé et
 commercial.
 
-Licences autorisées : `MIT`, `Apache-2.0`, `ISC`, `BSD-2-Clause`,
-`BSD-3-Clause`, `Unicode-3.0`, plus la licence commerciale JUCE.
+Il n'existe plus de garde-fou automatique (§2). La protection tient en quatre
+règles, à vérifier en revue :
 
-**Interdits nommément**, avec la preuve :
-
-| interdit | raison |
+| règle | raison |
 |---|---|
-| `nih-plug` | Son README : « *any VST3 plugins built with NIH-plug need to be able to comply with the terms of the GPLv3 license* ». |
-| `vst3-sys` | Son `license.md` est **GPL v3-or-later**. C'est la cause de la clause ci-dessus. |
-| Cible **AAX** de JUCE | SDK Avid, propriétaire **ou GPLv3**. Ne pas activer. |
-| Cible **ASIO** de JUCE | SDK Steinberg, propriétaire **ou GPLv3**. Ne pas activer. |
-| `JUCE_USE_MP3AUDIOFORMAT` | Désactivé par défaut, et JUCE avertit lui-même : « *NOT guaranteed to be free from infringements of 3rd-party intellectual property* ». Laisser à 0. |
+| **Épingler la version de JUCE** dans le CMake, jamais de branche flottante | une version majeure change le régime de licence du SDK VST3 embarqué |
+| **Ne jamais activer la cible AAX** | SDK Avid, propriétaire **ou GPLv3** |
+| **Ne jamais activer la cible ASIO** | SDK Steinberg, propriétaire **ou GPLv3** |
+| **Laisser `JUCE_USE_MP3AUDIOFORMAT` à 0** | JUCE avertit lui-même : « *NOT guaranteed to be free from infringements of 3rd-party intellectual property* » |
 
-**Le garde-fou est mécanique, pas déclaratif** : `cargo deny check licenses`
-tourne en CI et bloque. Il doit être prouvé capable de **refuser** avant d'être
-cru — ajouter temporairement une dépendance copyleft, constater l'échec, la
-retirer.
+Toute dépendance ajoutée au CMake fait l'objet d'une vérification de licence
+explicite, notée dans la PR. Licences acceptables : `MIT`, `Apache-2.0`, `ISC`,
+`BSD-2-Clause`, `BSD-3-Clause`, plus la licence commerciale JUCE.
 
-**Verrou de version** : SDK VST3 **≥ 3.8.0** (MIT). Un SDK 3.7.x replonge dans
-le régime dual GPLv3/propriétaire, et **aucun garde-fou automatique ne
-l'impose** — c'est au build de le fixer.
+Les autres dépendances embarquées par JUCE sont permissives (FLAC et Ogg Vorbis
+en BSD, HarfBuzz, zlib, CHOC en ISC…). **Aucune dépendance LGPL ni GPL-seule.**
+`JUCE_WEB_BROWSER` reste à 0 : inutile ici, et c'est ce qui charge WebKitGTK.
 
 ---
 
-## 5. Dépendances
+## 5. Structure du projet
 
-### Rust
-
-| crate | rôle | dépendances | licence |
-|---|---|---|---|
-| `harmony` | le cœur | **aucune** | propriétaire (à nous) |
-| `mid-export` | CLI `.mid` | `midi_file` | MIT/Apache |
-| hôtes de test | exercer le C ABI | `libloading` | à valider par `cargo deny` |
-
-**`crates/harmony` n'a aucune dépendance de production.** `no_std`, sans
-`alloc`. Vérifié au spike : `dumpbin -imports` sur la DLL produite ne montre
-**aucun `malloc`/`free`**.
-
-### C++
-
-JUCE 9 embarque ses dépendances ; toutes permissives sauf les trois cibles
-optionnelles interdites au §4. Aucune dépendance LGPL ni GPL-seule.
-`JUCE_WEB_BROWSER` reste à 0 : inutile ici, et c'est ce qui charge WebKitGTK
-sous Linux.
-
----
-
-## 6. Profils de build et pièges
-
-Ces cinq points coûtent des heures si on les découvre en route. Tous constatés
-au spike du 2026-07-28.
-
-1. **Les profils Cargo vivent à la RACINE du workspace.** Dans le `Cargo.toml`
-   d'un membre ils sont **silencieusement ignorés**, et l'erreur qui en résulte
-   (`unwinding panics are not supported without std`) ne pointe pas vers la cause.
-2. **`opt-level = 3`, jamais `"z"`.** Mesuré : `"z"` coûte **+12,7 ns/appel**,
-   onze fois le coût de la frontière FFI. Le gain de 9,5 Ko ne vaut rien.
-3. **La commande de test est `cargo test --features std`**, jamais `cargo test`
-   nu. `no_std` + `cdylib` + `cargo test` sont mutuellement hostiles : le cdylib
-   exige `panic = "abort"`, cargo force `unwind` sur le profil test et refuse un
-   `[profile.test] panic` explicite. Une feature `std`, off par défaut, arbitre.
-4. **Gater le `panic_handler` sur la feature, pas sur `cfg(test)`** — cargo
-   construit aussi la lib normale pour les doctests.
-5. **Git Bash mange les arguments `/flag` de MSVC.** Utiliser `dumpbin -exports`
-   et non `/exports`, sinon `LNK1181`.
-
-Profil release :
-
-```toml
-[profile.release]
-opt-level = 3
-lto = true
-panic = "abort"
-codegen-units = 1
+```
+tuple-vst/
+├── CMakeLists.txt          racine — PARTAGÉ
+├── PRD.md · ARCHITECTURE.md   PARTAGÉS
+├── source/
+│   ├── harmony/            ANTOINE — C++ pur, AUCUNE dépendance JUCE
+│   │   ├── ChordSpec.h/.cpp    hauteurs + rôles, sans octaves
+│   │   ├── Voicing.h/.cpp      la couture : spec → notes
+│   │   └── VoiceLeading.h/.cpp mouvement entre accords
+│   ├── PluginProcessor.h/.cpp  thread audio, note-off garanti
+│   ├── PluginEditor.h/.cpp     UI — STÉPHANE
+│   └── Params.h                layout APVTS
+├── fixtures/               ANTOINE SEUL — la spécification exécutable
+├── tests/                  binaire de test, sans JUCE, boucle rapide
+├── hosts/                  STÉPHANE — matrice DAW et guides de routage
+├── proof/                  témoins datés et signés
+└── .github/workflows/      CI matrice Windows + macOS
 ```
 
-⚠️ **Le `panic_handler` en `loop {}` est un piège différé** : dans un thread
-audio c'est un freeze, dans un onglet c'est un onglet mort. Aujourd'hui c'est du
-code mort — aucun chemin de panique, aucun `unwrap`, bornes vérifiées. Dès qu'un
-`unwrap` entrera dans le cœur, il deviendra un bug de production silencieux.
+**`source/harmony/` ne compile pas contre JUCE.** C'est la règle qui garde la
+boucle de test rapide. Si un fichier de `harmony/` a besoin d'inclure un en-tête
+JUCE, c'est que la frontière a été franchie au mauvais endroit.
 
 ---
 
-## 7. Invariants du thread audio
+## 6. Invariants du thread audio
 
-Non négociables, et le point 3 est une promesse produit.
+Non négociables. Le point 3 est une promesse produit.
 
-1. **Zéro allocation, zéro lock, zéro I/O** dans `process()` et tout ce qu'il
-   appelle. Le buffer de sortie est **possédé par l'appelant**, sur la pile.
-2. **Zéro panique.** Tout passe par `Result`, aucun `unwrap` dans le cœur.
+1. **Zéro allocation, zéro lock, zéro I/O** dans `processBlock` et tout ce qu'il
+   appelle. Buffers de taille fixe, alloués dans `prepareToPlay`.
+2. **Zéro exception** sur le chemin audio.
 3. **Toute note-on a son note-off garanti** — changement d'accord, arrêt du
-   transport, déchargement du plugin. Testé, pas supposé.
-4. **Les notes sont placées à leur offset d'échantillon exact** dans le buffer
-   (`addEvent(msg, sampleOffset)`), jamais à 0. C'est ce que VST3
-   (`Event::sampleOffset`) et CLAP (`header.time`) permettent, et ce qui
-   distingue un placement précis d'un placement quantifié au buffer.
+   transport, `releaseResources`, déchargement du plugin. Testé, pas supposé.
+   C'est le bug ouvert depuis 2020 chez le concurrent.
+4. **Les notes sont placées à leur offset d'échantillon exact** —
+   `midiMessages.addEvent(msg, sampleOffset)`, jamais à 0. C'est ce que
+   `MidiBuffer` permet et ce que VST3 (`Event::sampleOffset`) et CLAP
+   (`header.time`) transportent.
 
-**Outillage de preuve** : `RealtimeSanitizer` (Clang ≥ 20, `-fsanitize=realtime`)
-couvre allocations, syscalls, locks et exceptions côté C++, sous Windows. Côté
-Rust, un check d'allocation au niveau du framework en builds debug ; l'équivalent
-RTSan standalone **ne supporte pas Windows**.
+**Preuve** : RealtimeSanitizer (`-fsanitize=realtime`, Clang ≥ 20) sur une
+compilation dédiée, en CI. Les contextes temps réel sont marqués
+`[[clang::nonblocking]]`.
 
 ---
 
-## 8. Contraintes imposées par les hôtes
+## 7. Plateformes
 
-- **Le plugin expose un bus de sortie audio même inutilisé.** Live et Cakewalk
-  refusent de charger un plugin MIDI-only ; le contournement est en dur dans
+**Windows et macOS dès le premier jour** — Antoine développe sous Windows,
+Stéphane sous macOS. Ce n'est pas un port différé.
+
+- **Formats v1** : VST3 + CLAP. **AU** devient atteignable grâce au poste macOS
+  (AUv2 est macOS-only, SDK Apple sous Apache 2.0) — à décider.
+- **Pas d'AAX** : compte Avid, clé iLok, adhésion supposant un produit déjà en vente.
+- **Pas de Linux** : supprime la question LGPL de WebKitGTK.
+- ⚠️ **macOS impose un compte Apple Developer (99 $/an) et la notarisation.**
+  Un plugin non notarisé est bloqué par Gatekeeper chez le client. C'est sur le
+  chemin critique, pas une finition.
+- ⚠️ **Apple Silicon ou Intel** — non établi. Détermine si on livre un binaire
+  universel ou seulement `arm64`.
+- **CI en matrice deux OS** dès le départ.
+
+### Contraintes imposées par les hôtes
+
+- Le plugin **expose un bus de sortie audio même inutilisé** : Live et Cakewalk
+  refusent de charger un plugin MIDI-only. Le contournement est en dur dans
   l'exemple officiel de JUCE.
-- Le plugin se charge **en position d'instrument**, pas en MIDI FX : Live n'a pas
-  de slot MIDI-effect pour VST/AU.
+- Il se charge **en position d'instrument**, pas en MIDI FX : Live n'a pas de
+  slot MIDI-effect pour VST/AU.
 - **Live n'achemine ni les CC ni le pitch bend émis en VST3.** Non réparable de
   notre côté.
 - **Live fusionne tous les canaux MIDI** en routage inter-pistes.
-- Cibles v1 : **Windows**, **VST3 + CLAP**. Pas de Linux (supprime la question
-  LGPL de WebKitGTK), pas d'AAX, macOS et AU après.
 
 ---
 
-## 9. Propriété de fichiers
+## 8. Propriété de fichiers
 
 Aucun mécanisme de verrouillage entre agents n'existe : la seule protection est
 la disjonction déclarée à l'avance.
 
 | zone | propriétaire |
 |---|---|
-| `crates/harmony/`, `fixtures/` | Antoine — `fixtures/` est la spécification du produit |
-| `plugin/`, `hosts/`, `xtask/`, CI | Stéphane |
-| `Cargo.toml` racine, `CMakeLists.txt` racine, `ARCHITECTURE.md`, `PRD.md`, `.claude/settings.json` | **partagés** — modifiés uniquement sur `main`, en commit dédié |
+| `source/harmony/`, `fixtures/`, `tests/` | Antoine — `fixtures/` est la spécification du produit |
+| `source/PluginEditor.*`, `hosts/`, CI | Stéphane |
+| `CMakeLists.txt`, `ARCHITECTURE.md`, `PRD.md`, `source/PluginProcessor.*` | **partagés** — modifiés sur `main`, en commit dédié |
 
 Une PR touchant `fixtures/` ne se merge jamais sans revue d'Antoine.
 
 ---
 
-## 10. Non décidé
+## 9. Non décidé
 
 1. **Le moteur d'expression** — un moteur servant le jeu et l'export, ou deux
    chemins. Couture d'architecture : à trancher avant d'écrire le moteur.
-2. **Lien statique ou dynamique** de la lib Rust dans le plugin. Le spike a
-   mesuré les deux (+0,64 ns statique, +1,14 ns DLL) ; le statique supprime un
-   fichier à déployer. Non tranché.
-3. **`clap-juce-extensions` ou `clap-wrapper`** pour le CLAP. Les deux sont MIT.
-4. **La forme juridique** de la collaboration — elle détermine le tier JUCE (§3).
-5. **La répartition entre les deux développeurs** — non décidée au 2026-07-29.
+2. **`clap-juce-extensions` ou `clap-wrapper`** pour le CLAP. Les deux sont MIT.
+3. **AU / Logic** dans la v1 ou après.
+4. **Apple Silicon seul ou binaire universel** — dépend du Mac de Stéphane.
+5. **La forme juridique** de la collaboration — elle détermine le tier JUCE (§3).
+6. **La répartition entre les deux développeurs** — non décidée au 2026-07-29.
    Personne n'a renoncé à quoi que ce soit ; à trancher avant la première vente.
