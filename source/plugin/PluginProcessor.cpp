@@ -82,6 +82,17 @@ void TupleProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         #pragma clang diagnostic push
         #pragma clang diagnostic ignored "-Wfunction-effects"
         void* deliberate = std::malloc (16);
+        // The barrier is load-bearing, not defensive. Without it this pair is
+        // dead code -- LLVM removes a malloc() whose result is never observed
+        // and is immediately free()d -- so at -O3 the witness evaporated and
+        // the armed run exited 0 while every piece of instrumentation was
+        // present and correct (measured on run 30469650838: PluginProcessor.cpp
+        // compiled with -fsanitize=realtime AND -DTUPLE_RTSAN, the built plugin
+        // referencing ___rtsan_realtime_enter, the host linking the runtime).
+        // The RTSan self-test earlier in the same job never caught this because
+        // it compiles unoptimised: a witness that only survives at -O0 does not
+        // witness the Release build it is supposed to be guarding.
+        asm volatile ("" : : "r" (deliberate) : "memory");
         std::free (deliberate);
         #pragma clang diagnostic pop
     }

@@ -8,7 +8,7 @@
 #include "MidiEmitter.h"
 #include "ParameterAdapter.h"
 #include "Params.h"
-#include "RealtimeAnnotations.h"
+#include "../RealtimeAnnotations.h"
 
 // Thread-audio note: processBlock() below allocates nothing, locks nothing,
 // throws nothing, and does no I/O (Global Constraints, ARCHITECTURE.md §6).

@@ -309,12 +309,21 @@ jobs:
             exit 1
           fi
           { grep -n "function-effects\|nonblocking\|nonallocating" "$log" || true; } | tee "$out"
-          n=$(wc -l < "$out" | tr -d ' ')
-          echo "function-effects diagnostic lines: $n"
-          if [ "$n" -gt 0 ]; then
-            echo "::warning title=Clang could not statically prove $n line(s) of call sites non-blocking::'Unproven', not 'proven unsafe' -- the analysis stops at JUCE's virtual dispatch. Full list uploaded as $out. The bloquant signal for the audio-thread invariants is the runtime RTSan result in the steps below."
+
+          # Split ours from the vendored dependency's own. JUCE's
+          # juce_audio_devices sources carry four "attribute 'nonblocking'
+          # should not be added via type conversion" warnings of their own,
+          # in CoreAudio/CoreMidi code Tuple neither wrote nor calls. Counting
+          # them together would inflate our number and hide movement in it.
+          warnings=$({ grep "warning:" "$out" || true; })
+          ours=$(printf '%s\n' "$warnings" | { grep -c "tuple-vst/source/" || true; })
+          vendored=$(printf '%s\n' "$warnings" | { grep -vc "tuple-vst/source/" || true; })
+          echo "function-effects warnings -- Tuple's own code: $ours ; vendored (JUCE): $vendored"
+
+          if [ "$ours" -gt 0 ]; then
+            echo "::warning title=$ours call site(s) in Tuple's own code are unproven::'Unproven', not 'proven unsafe'. What remains after annotating our own app/plugin functions is the JUCE boundary: AudioPlayHead::getPosition() is virtual (host-supplied, unprovable by construction), and AudioBuffer::clear / MidiBuffer::clear / MidiBuffer::swapWith have no definition in the translation unit. Full list in $out. The bloquant signal is the runtime RTSan result below."
           else
-            echo "Clang raised no function-effects diagnostic on this build."
+            echo "Clang raised no function-effects warning on Tuple's own code."
           fi
 
       - name: run proof hosts against the RTSan build (real execution of processBlock)

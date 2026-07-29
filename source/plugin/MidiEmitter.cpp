@@ -2,7 +2,7 @@
 
 namespace tuple::plugin {
 
-void emit (const tuple::app::NoteBatch& batch, juce::MidiBuffer& buffer)
+void emit (const tuple::app::NoteBatch& batch, juce::MidiBuffer& buffer) TUPLE_NONBLOCKING
 {
     for (uint8_t i = 0; i < batch.count; ++i)
     {

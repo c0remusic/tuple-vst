@@ -4,6 +4,11 @@
 // reader (ARCHITECTURE.md §6: "Les contextes temps réel sont marqués
 // [[clang::nonblocking]]").
 //
+// Lives at source/ root, above domain/app/plugin, on purpose: it is a
+// compiler-contract header, not a layer. app/ needs it (releaseAll,
+// decideTransportStop are called from the audio thread) and app/ must never
+// include plugin/ — the Dependency Rule points inward.
+//
 // TUPLE_NONBLOCKING expands to `[[clang::nonblocking]]` on toolchains that
 // actually implement the attribute, and to nothing anywhere else. That guard
 // is not decoration: MSVC and any pre-20 Clang would otherwise emit an

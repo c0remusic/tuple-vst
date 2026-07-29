@@ -3,7 +3,7 @@
 namespace tuple::app {
 
 TransportStopDecision decideTransportStop (bool wasPlaying, bool isPlayingNow,
-                                            uint8_t soundingCount, int numSamples)
+                                            uint8_t soundingCount, int numSamples) TUPLE_NONBLOCKING
 {
     const bool fallingEdge = wasPlaying && ! isPlayingNow && soundingCount > 0;
 

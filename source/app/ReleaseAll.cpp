@@ -4,7 +4,7 @@ namespace tuple::app {
 
 using tuple::domain::NoteEvent;
 
-NoteBatch releaseAll (const NoteBatch& sounding, int sampleOffset)
+NoteBatch releaseAll (const NoteBatch& sounding, int sampleOffset) TUPLE_NONBLOCKING
 {
     NoteBatch result {};
     result.count = 0;

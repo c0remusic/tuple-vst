@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include "../RealtimeAnnotations.h"
 
 namespace tuple::app {
 
@@ -32,7 +33,13 @@ struct TransportStopDecision
     bool advanceWasPlaying;
 };
 
+// TUPLE_NONBLOCKING: called from TupleProcessor::processBlock, so it inherits
+// the audio-thread contract. Annotating it is not paperwork -- without it,
+// Clang reported this call as "cannot be inferred 'nonblocking' because it has
+// no definition in this translation unit" (run 30469650838), i.e. the analysis
+// stopped at our own boundary. With the annotation the compiler verifies the
+// body instead of giving up at the declaration.
 TransportStopDecision decideTransportStop (bool wasPlaying, bool isPlayingNow,
-                                            uint8_t soundingCount, int numSamples);
+                                            uint8_t soundingCount, int numSamples) TUPLE_NONBLOCKING;
 
 } // namespace tuple::app
