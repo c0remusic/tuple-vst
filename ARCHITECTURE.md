@@ -183,6 +183,81 @@ JUCE, c'est que la frontière a été franchie au mauvais endroit.
 
 ---
 
+## 5 bis. Paramètres, état et identifiants
+
+Tranché le 2026-07-29. **Ces trois listes sont définitives au sens où les changer
+après la première vente casse les projets sauvegardés des utilisateurs.**
+
+### Les six paramètres automatisables
+
+Un paramètre obtient une piste d'automation dans le DAW, se sauvegarde et se
+module. Il n'y en a que six :
+
+| paramètre | type | note |
+|---|---|---|
+| Key | 12 valeurs | la tonique |
+| Scale | énumération | la gamme |
+| Octave | entier borné | le registre de base |
+| Openness | flottant | ouverture — contraint le moteur |
+| Density | flottant | densité — contraint le moteur |
+| Register | flottant | centre de placement — contraint le moteur |
+
+**L'accord joué n'est PAS un paramètre.** Il ne s'automatise pas depuis la
+timeline. Conséquence voulue : la grille reste un instrument, et sa taille n'est
+pas figée par des automations existantes.
+
+### L'état sérialisé, non automatisable
+
+- La progression capturée
+- Les forçages par accord (famille de voicing, inversion, variation)
+- L'état d'ouverture du tiroir Progression
+
+### Le déclenchement
+
+Deux entrées, pas d'automation : **la souris** sur une cellule, et **une note
+MIDI entrante**. Le second permet d'enregistrer ses déclencheurs en MIDI dans le
+DAW et de les rejouer à l'identique.
+
+⚠️ **Le mapping note vers cellule devient une convention publique.** Le changer
+après diffusion casserait les enregistrements MIDI des utilisateurs. À figer
+avant la première version publique — non figé au 2026-07-29.
+
+### Les familles de voicing
+
+**Il n'y a pas de catalogue de 28 types.** Le moteur décide ; l'utilisateur peut
+forcer une **famille** sur un accord précis. Six familles, chacune une manière
+structurellement distincte de répartir les mêmes notes :
+
+`Close` · `Open` · `Drop` · `Rootless` · `Quartal` · `Two-hand`
+
+Les noms évoquant un genre musical (`house`, `trance`, `funk`, `frenchtouch`,
+`deeptech`…) du device Max for Live **disparaissent** : ce n'étaient pas des
+familles mais des préréglages, et « genre » n'est pas un concept produit.
+
+### Les identifiants — définitifs à vie
+
+| champ | valeur |
+|---|---|
+| Nom du fabricant | `Tuple` |
+| Code fabricant | `Tupl` |
+| Nom du plugin | `Tuple` |
+| Code plugin | `Chrd` |
+| Identifiant CLAP | `live.tuple.chords` |
+| Identifiant de bundle macOS | `live.tuple.chords` |
+
+Le code plugin `Chrd` laisse la place à un futur `Mldy` — même fabricant, produit
+différent, aucun conflit.
+
+### Une contrainte de forme sur la couche domaine
+
+`source/domain/` **expose la gamme courante et la spécification de l'accord
+courant comme un état lisible**, pas comme un détail interne du moteur de
+voicing. Ça ne coûte rien aujourd'hui, c'est la bonne forme de toute façon, et
+c'est ce qui permettrait un jour d'y brancher un guidage mélodique sans toucher
+au moteur d'accords.
+
+---
+
 ## 6. Invariants du thread audio
 
 Non négociables. Le point 3 est une promesse produit.
@@ -250,11 +325,25 @@ Une PR touchant `fixtures/` ne se merge jamais sans revue d'Antoine.
 
 ## 9. Non décidé
 
-1. **Le moteur d'expression** — un moteur servant le jeu et l'export, ou deux
+1. **Le mapping note MIDI vers cellule** (§5 bis) — convention publique, à figer
+   avant la première version publique.
+2. **Le moteur d'expression** — un moteur servant le jeu et l'export, ou deux
    chemins. Couture d'architecture : à trancher avant d'écrire le moteur.
-2. **`clap-juce-extensions` ou `clap-wrapper`** pour le CLAP. Les deux sont MIT.
-3. **AU / Logic** dans la v1 ou après.
-4. **Apple Silicon seul ou binaire universel** — dépend du Mac de Stéphane.
-5. **La forme juridique** de la collaboration — elle détermine le tier JUCE (§3).
-6. **La répartition entre les deux développeurs** — non décidée au 2026-07-29.
+3. **`clap-juce-extensions` ou `clap-wrapper`** pour le CLAP. Les deux sont MIT.
+4. **AU / Logic** dans la v1 ou après.
+5. **Apple Silicon seul ou binaire universel** — dépend du Mac de Stéphane.
+6. **Le compte Apple Developer** (99 $/an) et la notarisation — obligatoires pour
+   livrer sur macOS, sur le chemin critique.
+7. **Le prix.** Zone déduite du marché : 59 à 79 $.
+8. **La forme juridique** de la collaboration — elle détermine le tier JUCE (§3).
+9. **La répartition entre les deux développeurs** — non décidée au 2026-07-29.
    Personne n'a renoncé à quoi que ce soit ; à trancher avant la première vente.
+
+### Tranché le 2026-07-29 — ne pas rediscuter sans décision datée qui remplace
+
+- Tout en C++/JUCE, pas de cœur en Rust.
+- Six paramètres automatisables, l'accord joué n'en est pas un.
+- Six familles de voicing, pas de catalogue de 28 types.
+- Les identifiants de plugin (§5 bis).
+- Déclenchement souris et note MIDI entrante, pas d'automation de grille.
+- Tupline hors périmètre v1 ; la couche domaine garde la porte ouverte.

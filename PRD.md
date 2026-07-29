@@ -251,18 +251,33 @@ mais chacun bloque une tranche fonctionnelle.
 
 ---
 
-## 11. Ce qui existe déjà et se transporte
+## 11. Le device Max for Live comme référence fonctionnelle
 
-Utile pour dimensionner : tout n'est pas à écrire.
+**Tuple VST repart de zéro. Aucun code du device n'est repris par défaut** ;
+toute reprise éventuelle serait une décision explicite, pas un présupposé.
 
-- **28 types de voicing** nommés et implémentés dans le moteur actuel.
-- **Substitutions** — module déjà pur et indépendant du moteur, il traverse la
-  refonte sans modification.
-- **Inversions** — spécification écrite et validée le 2026-06-26, jamais
-  implémentée. La règle « slash = vérité de la basse » en vient.
-- **Suggestions d'accord suivant** — module déjà indépendant du voicing.
-- **Spécification d'accord** (hauteurs + rôles harmoniques, sans octaves) —
-  c'est la couture sur laquelle le nouveau moteur se branche.
+Ce qui suit est un **inventaire de ce que le device fait**, du point de vue de
+l'utilisateur — utile pour décider ce qu'on garde, ce qu'on jette et ce qui
+manque. Ce n'est pas une liste de fichiers à porter.
 
-À l'inverse, **le réalisateur de voicing, le sélecteur de mouvement et les
-invariants d'identité sont à réécrire** — c'est l'objet de la refonte.
+**Ce qu'on garde comme idée :**
+- La grille de tous les accords de la gamme, empruntés compris, tout visible.
+- La notion de spécification d'accord — hauteurs et rôles harmoniques, sans
+  octaves — comme point d'articulation entre « quel accord » et « comment il
+  sonne ».
+- Les substitutions par fonction harmonique.
+- Les inversions, avec la règle « slash = vérité de la basse ».
+- Les suggestions d'accord suivant.
+- Le tiroir de progression.
+
+**Ce qu'on jette :**
+- Les **28 types de voicing nommés**. Remplacés par six familles (voir §4), et
+  les noms évoquant un genre musical disparaissent.
+- Le moteur de voicing lui-même, entièrement remplacé.
+- Tout ce qui dépend de Live : synchronisation de gamme, écriture dans un clip,
+  intégration Push, architecture à deux fenêtres.
+
+**Ce qui manque et qu'il faudra concevoir :**
+- Le nouveau moteur de voicing automatique et ses réglages de caractère.
+- Le forçage par accord et sa persistance.
+- L'expression à l'export (§7).
