@@ -145,6 +145,21 @@ add_executable(DomainTests
 target_include_directories(DomainTests PRIVATE source/domain)
 target_compile_features(DomainTests PRIVATE cxx_std_17)
 
+# --- Voicing test binary (Task 3) -------------------------------------------
+# Same fast-loop rationale as DomainTests: no JUCE, standalone. The fixture
+# path is passed as an absolute define so the binary finds
+# fixtures/voicing_basic.txt regardless of the working directory it is run
+# from (build output dir, CTest, CI runner...).
+add_executable(VoicingTests
+    tests/voicing_tests.cpp
+    source/domain/ChordSpec.cpp
+    source/domain/Voicing.cpp
+)
+target_include_directories(VoicingTests PRIVATE source/domain)
+target_compile_features(VoicingTests PRIVATE cxx_std_17)
+target_compile_definitions(VoicingTests PRIVATE
+    TUPLE_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/fixtures")
+
 if(TUPLE_BUILD_PROOF_HOSTS AND WIN32)
     juce_add_console_app(TupleVST3HostSmoke
         PRODUCT_NAME "TupleVST3HostSmoke"

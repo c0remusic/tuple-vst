@@ -1,0 +1,32 @@
+# SPÉCIFICATION. On ne modifie jamais un cas pour faire passer un test.
+#
+# Format : rootPc | tones (semitones:role,...) | family | centre | notes attendues
+# Toutes les lignes ci-dessous utilisent centre=60. `realize()` est
+# délibérément naïf en Phase 0 (docs/plans/2026-07-29-phase-0-squelette.md,
+# Task 3) : chaque hauteur est placée dans l'octave la plus proche de centre,
+# la famille modifiant ensuite la répartition. Dix-huit cas : six familles ×
+# trois accords (majeur, mineur, dominante 7).
+
+# --- Accord majeur : 0:Root,4:Third,7:Fifth ---------------------------------
+0 | 0:Root,4:Third,7:Fifth | Close | 60 | 60,64,55
+0 | 0:Root,4:Third,7:Fifth | Open | 60 | 60,64,67
+0 | 0:Root,4:Third,7:Fifth | Drop | 60 | 60,52,55
+0 | 0:Root,4:Third,7:Fifth | Rootless | 60 | 64,55
+0 | 0:Root,4:Third,7:Fifth | Quartal | 60 | 60,52,55
+0 | 0:Root,4:Third,7:Fifth | TwoHand | 60 | 60,64,55
+
+# --- Accord mineur : 0:Root,3:Third,7:Fifth ---------------------------------
+0 | 0:Root,3:Third,7:Fifth | Close | 60 | 60,63,55
+0 | 0:Root,3:Third,7:Fifth | Open | 60 | 60,63,67
+0 | 0:Root,3:Third,7:Fifth | Drop | 60 | 60,51,55
+0 | 0:Root,3:Third,7:Fifth | Rootless | 60 | 63,55
+0 | 0:Root,3:Third,7:Fifth | Quartal | 60 | 60,51,55
+0 | 0:Root,3:Third,7:Fifth | TwoHand | 60 | 60,63,55
+
+# --- Dominante 7 : 0:Root,4:Third,7:Fifth,10:Seventh ------------------------
+0 | 0:Root,4:Third,7:Fifth,10:Seventh | Close | 60 | 60,64,55,58
+0 | 0:Root,4:Third,7:Fifth,10:Seventh | Open | 60 | 60,64,67,70
+0 | 0:Root,4:Third,7:Fifth,10:Seventh | Drop | 60 | 60,64,55,58
+0 | 0:Root,4:Third,7:Fifth,10:Seventh | Rootless | 60 | 64,55,58
+0 | 0:Root,4:Third,7:Fifth,10:Seventh | Quartal | 60 | 60,52,55,58
+0 | 0:Root,4:Third,7:Fifth,10:Seventh | TwoHand | 60 | 60,64,55,58
