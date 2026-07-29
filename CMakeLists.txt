@@ -165,6 +165,19 @@ target_compile_features(VoicingTests PRIVATE cxx_std_17)
 target_compile_definitions(VoicingTests PRIVATE
     TUPLE_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/fixtures")
 
+# --- Grid test binary (Task 6) -----------------------------------------------
+# Same fast-loop rationale as DomainTests/VoicingTests: no JUCE, standalone.
+# BuildGrid only needs domain/ChordSpec (for the ChordSpec value type) and
+# domain/Scale (header-only, no .cpp) — no other domain/app source is pulled
+# in.
+add_executable(GridTests
+    tests/grid_tests.cpp
+    source/domain/ChordSpec.cpp
+    source/app/BuildGrid.cpp
+)
+target_include_directories(GridTests PRIVATE source/domain source/app)
+target_compile_features(GridTests PRIVATE cxx_std_17)
+
 # --- Params test binary (Task 4) --------------------------------------------
 # Unlike DomainTests/VoicingTests this one DOES need JUCE (ParameterAdapter is
 # the seam where a JUCE type touches settings), but it stays as shallow a
