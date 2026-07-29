@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build-and-validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # FetchContent (JUCE + clap-juce-extensions) is the slow part of every
+      # configure; cache it keyed on CMakeLists.txt so a pin bump busts the
+      # cache but nothing else does.
+      - name: cache FetchContent deps
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: fetchcontent-${{ matrix.os }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: configure (Windows, MSVC, Visual Studio generator)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DTUPLE_BUILD_PROOF_HOSTS=OFF
+
+      - name: configure (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DTUPLE_BUILD_PROOF_HOSTS=OFF
+
+      # --- Step 2: domain + app test binaries, bloquant ---------------------
+      - name: build fast test binaries
+        shell: bash
+        run: |
+          cmake --build build --config Release \
+            --target DomainTests VoicingTests GridTests NoteoffTests ParamsTests \
+            --parallel
+
+      - name: run fast test binaries
+        shell: bash
+        run: |
+          set -e
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            bindir="build/Release"
+          else
+            bindir="build"
+          fi
+          for t in DomainTests VoicingTests GridTests NoteoffTests ParamsTests; do
+            exe="$bindir/$t"
+            [ "${{ runner.os }}" = "Windows" ] && exe="$exe.exe"
+            echo "::group::$t"
+            "$exe"
+            echo "::endgroup::"
+          done
