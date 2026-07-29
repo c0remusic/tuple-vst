@@ -162,6 +162,26 @@ continu par conception** (Step 4 est explicitement bloquant dans le plan) —
 ce n'est pas une régression de Task 7, c'est Task 7 qui le révèle pour la
 première fois.
 
+**Résolu depuis (2026-07-29), hors Task 7.** Le paragraphe ci-dessus reste tel
+qu'il a été mesuré ; ce qui suit est la suite, pas une réécriture. Cause racine
+réelle : ni `ParameterAdapter` ni le round-trip XML — les six paramètres
+round-trippaient déjà correctement. `TupleProcessor::setStateInformation()`
+restaurait les valeurs via `apvts.replaceState()` sans jamais appeler
+`updateHostDisplay()`, or le wrapper CLAP de clap-juce-extensions n'émet
+`host.paramsRescan(CLAP_PARAM_RESCAN_VALUES)` que depuis son propre
+`audioProcessorChanged()`, lequel ne s'exécute qu'en réponse à cet appel. L'hôte
+avait donc les bonnes valeurs côté plugin et n'était jamais prévenu de les
+relire — d'où le « changed without a rescan request » ci-dessus, à la lettre.
+Correctif d'une ligne : `source/plugin/PluginProcessor.cpp`, commit `1248379`.
+
+Mesure, pas prévision — premier run vert sur ce SHA, `30437655033` :
+`clap-validator validate` = `success` sur les deux OS, Windows rapportant
+`44 tests run, 32 passed, 0 failed, 1 warnings, 11 skipped`, et macOS
+`state-reproducibility-basic` / `-binary` / `-buffered` → `PASSED`. Reconfirmé
+sur `30467546532`. La phrase « rouge en continu par conception » ci-dessus
+n'est donc plus d'actualité pour Step 4 ; elle décrivait la situation tant que
+le correctif n'existait pas.
+
 Sortie complète archivée en artefact CI (`proof-<os>`,
 `clap-validator-<os>.txt`) à chaque run, pas committée dans le dépôt (un
 commit automatique par push aurait pollué l'historique — voir note de portée
