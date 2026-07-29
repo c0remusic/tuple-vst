@@ -171,7 +171,15 @@ jobs:
           curl -sSL -o cv.zip "$url"
           mkdir -p tools/clap-validator-bin
           (cd tools/clap-validator-bin && cmake -E tar xf ../../cv.zip)
-          bin=$(find tools/clap-validator-bin -type f -iname "clap-validator*" ! -iname "*.zip" | head -1)
+          # The .zip asset's own name says "0.4.1", but the file it contains
+          # is a nested "clap-validator-0.3.2-...-macos-universal.tar.gz" --
+          # verified 2026-07-29 by an actual download, not documented
+          # upstream. Unpack any nested archive before hunting for the exe.
+          for f in $(find tools/clap-validator-bin -type f \( -iname "*.tar.gz" -o -iname "*.tgz" \)); do
+            (cd "$(dirname "$f")" && cmake -E tar xf "$(basename "$f")")
+          done
+          bin=$(find tools/clap-validator-bin -type f -iname "clap-validator*" \
+            ! -iname "*.zip" ! -iname "*.tar.gz" ! -iname "*.tgz" | head -1)
           [ -n "$bin" ] || { echo "::error::clap-validator binary not found after extraction"; find tools/clap-validator-bin; exit 1; }
           chmod +x "$bin" || true
           echo "CLAP_VALIDATOR=$bin" >> "$GITHUB_ENV"
@@ -189,7 +197,11 @@ jobs:
           curl -sSL -o pv.zip "$url"
           mkdir -p tools/pluginval-bin
           (cd tools/pluginval-bin && cmake -E tar xf ../../pv.zip)
-          bin=$(find tools/pluginval-bin -type f -iname "pluginval*" ! -iname "*.zip" | head -1)
+          for f in $(find tools/pluginval-bin -type f \( -iname "*.tar.gz" -o -iname "*.tgz" \)); do
+            (cd "$(dirname "$f")" && cmake -E tar xf "$(basename "$f")")
+          done
+          bin=$(find tools/pluginval-bin -type f -iname "pluginval*" \
+            ! -iname "*.zip" ! -iname "*.tar.gz" ! -iname "*.tgz" | head -1)
           [ -n "$bin" ] || { echo "::error::pluginval binary not found after extraction"; find tools/pluginval-bin; exit 1; }
           chmod +x "$bin" || true
           echo "PLUGINVAL=$bin" >> "$GITHUB_ENV"
