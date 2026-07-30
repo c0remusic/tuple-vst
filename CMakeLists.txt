@@ -131,7 +131,7 @@ if(TUPLE_RTSAN)
         target_compile_options(TupleVST PUBLIC -fsanitize=realtime)
         target_link_options(TupleVST PUBLIC -fsanitize=realtime)
         # Lets the source distinguish "built for the sanitizer" from a normal
-        # build: source/plugin/RealtimeAnnotations.h turns it into a hard
+        # build: source/RealtimeAnnotations.h turns it into a hard
         # #error if the toolchain does not actually implement
         # [[clang::nonblocking]] (a green RTSan run with no annotation in
         # effect is worse than no RTSan run at all), and PluginProcessor

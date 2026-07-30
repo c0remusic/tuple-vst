@@ -60,7 +60,7 @@ Deux manques nommés à l'époque, tous deux traités ci-dessous :
 
 1. **Le point d'entrée n'était pas annoté.**
    `TupleProcessor::processBlock` porte désormais `TUPLE_NONBLOCKING`
-   (`source/plugin/RealtimeAnnotations.h`), sur la déclaration ET la
+   (`source/RealtimeAnnotations.h`), sur la déclaration ET la
    définition — l'attribut fait partie du TYPE de la fonction, une seule des
    deux ne suffirait pas. La macro n'existe que là où le compilateur
    implémente réellement l'attribut ; ailleurs (MSVC) elle s'efface, sans

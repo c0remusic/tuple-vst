@@ -162,7 +162,7 @@ jobs:
 
       # The coverage gap this step used to merely WARN about is closed:
       # TupleProcessor::processBlock now carries TUPLE_NONBLOCKING
-      # ([[clang::nonblocking]], see source/plugin/RealtimeAnnotations.h), so
+      # ([[clang::nonblocking]], see source/RealtimeAnnotations.h), so
       # the sanitizer is finally told which function is the real-time context.
       # The step stays, inverted: it now FAILS if the annotation disappears,
       # because losing it would turn every RTSan check below into a green no-op
@@ -316,7 +316,7 @@ jobs:
 
       # Clang's function-effects analysis is the COMPILE-TIME half of
       # [[clang::nonblocking]]; the runtime sanitizer is the other half, and
-      # they fail independently (source/plugin/RealtimeAnnotations.h). This
+      # they fail independently (source/RealtimeAnnotations.h). This
       # step surfaces the static half instead of letting it scroll past in a
       # build log. It is deliberately NON-blocking: the analysis cannot see
       # through virtual dispatch, so every call into JUCE (AudioPlayHead::
