@@ -85,6 +85,23 @@ Un vrai échec rend `27 steps`. Ne pas partir en debug du code sur un `0 step` :
 il n'y a rien à déboguer, le job n'a pas tourné. Un re-run ne prouve rien non
 plus dans ce cas — il rend la même chose.
 
+**CAUSE CONFIRMÉE le 2026-07-30, par expérience et non par l'API.** La « cause
+probable non confirmée » ci-dessus est la bonne. Le dépôt a été passé **public**
+(`gh repo edit --visibility public`), puis `gh workflow run ci.yml --ref phase-0`
+→ run **30505056411**, les deux jobs `in_progress` en 40 s, macOS `success`. Rien
+d'autre n'avait changé. Actions sur un dépôt public avec des runners **standard**
+ne consomme pas le quota et n'est pas soumis à la limite de dépense — la doc le
+dit (« The use of standard GitHub-hosted runners is free: In public
+repositories »), et le basculement l'a prouvé sur ce compte précis.
+⚠️ Contre-indice à ne pas mal lire : `tuple` et `sift` sont PUBLICS et
+apparaissent quand même dans la facturation ($0.28 et $7.14). Le panneau
+« Usage by repository » agrège **tous** les produits facturés, pas seulement
+Actions — ne pas en déduire qu'Actions est facturé en public.
+⚠️ **État à restaurer** : `tuple-vst` est un produit fermé et commercial
+(`CLAUDE.md` §1). Le passage en public était une mesure temporaire le temps du
+reset de quota — `gh repo edit c0remusic/tuple-vst --visibility private
+--accept-visibility-change-consequences` pour le refermer.
+
 ### Un push sur ce dépôt coûte de l'ordre de 150 minutes de quota facturées
 Mesuré sur les runs 30467546532 / 30469650838 / 30471091956 : Windows 20 à
 24 min réelles, macOS 7 à 13 min. Aux multiplicateurs GitHub (Windows ×2,
@@ -103,3 +120,38 @@ trois runs ont tourné en parallèle sur la même branche, dont deux déjà pér
 DAW est bien la chaîne `register`, mais le champ C++ correspondant s'appelle
 `centre` partout. Cette différence est délibérée. Renommer l'identifiant exposé
 casserait les projets sauvegardés des utilisateurs.
+
+## Découvertes — 2026-07-30 (TTL 6 mois)
+
+### `-Wfunction-effects` est ÉTEINT par défaut : « 0 diagnostic » ne veut rien dire
+La moitié compile-time de `[[clang::nonblocking]]` (l'analyse function-effects de
+Clang) ne s'émet pas sans que le drapeau soit demandé par son nom. Mesuré sur le
+même build, même toolchain (LLVM 22.1.8) : **0 ligne** avant, **19 lignes** après
+avoir ajouté `-Wfunction-effects` dans `CMakeLists.txt` (run 30467546532 →
+30471091956).
+→ Un compteur de warnings à zéro et un groupe de warnings désactivé produisent
+la même sortie. **Nommer le drapeau** pour que le silence soit un résultat.
+Après annotation de `decideTransportStop`/`releaseAll`/`emit`, les 10 warnings
+restants sur notre code sont TOUS des appels dans des types JUCE
+(`MidiMessage`, `MidiBuffer`, `AudioBuffer`, `AudioPlayHead::getPosition` qui est
+virtuelle donc non prouvable) — aucun appel Tuple → Tuple.
+
+### Un témoin `malloc()`/`free()` est supprimé par l'optimiseur en Release
+Le témoin planté dans `processBlock` (violation délibérée sous
+`TUPLE_RTSAN_SABOTAGE`) sortait 0 alors que toute l'instrumentation était
+vérifiablement présente — `compile_commands.json` avec `-fsanitize=realtime` ET
+`-DTUPLE_RTSAN`, le plugin référençant `___rtsan_realtime_enter`, les trois
+images liant `libclang_rt.rtsan_osx_dynamic.dylib`. Cause : LLVM supprime un
+`malloc()` dont le résultat n'est jamais observé et qui est `free()`
+immédiatement. À `-O3` la violation était du code mort.
+→ Toute violation délibérée doit porter une barrière
+(`asm volatile ("" : : "r" (p) : "memory")`). Et le self-test RTSan du même job
+ne pouvait pas l'attraper : il compile **sans optimisation**. Un témoin validé
+à `-O0` ne témoigne pas du binaire Release qu'il garde.
+
+### Un `.clap` macOS est un RÉPERTOIRE : `dlopen` dessus échoue
+`dlopen("…/Tuple.clap")` échoue sur macOS — le `.clap` est un bundle. Il faut
+résoudre `Tuple.clap/Contents/MacOS/<binaire>`, tout en passant le chemin du
+**bundle d'origine** à `clap_entry->init()`, comme le veut la spec CLAP.
+Éviter `<filesystem>` pour ça : `CMAKE_OSX_DEPLOYMENT_TARGET` peut être sous le
+10.15 requis par `std::filesystem` de libc++ — `stat`/`opendir` suffisent.
