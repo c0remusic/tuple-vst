@@ -5,3 +5,10 @@ out/
 .vscode/
 *.user
 CMakeUserPresets.json
+
+# Sorties de rendu Blender : 24 Mo de PNG régénérables par
+# tools/blender/tuple_faceplate.py et les balayages. Le code est suivi, pas
+# les images qu'il produit.
+tools/blender/renders/
+__pycache__/
+.impeccable/
