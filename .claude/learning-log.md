@@ -97,10 +97,19 @@ repositories »), et le basculement l'a prouvé sur ce compte précis.
 apparaissent quand même dans la facturation ($0.28 et $7.14). Le panneau
 « Usage by repository » agrège **tous** les produits facturés, pas seulement
 Actions — ne pas en déduire qu'Actions est facturé en public.
-⚠️ **État à restaurer** : `tuple-vst` est un produit fermé et commercial
-(`CLAUDE.md` §1). Le passage en public était une mesure temporaire le temps du
-reset de quota — `gh repo edit c0remusic/tuple-vst --visibility private
---accept-visibility-change-consequences` pour le refermer.
+**Le dépôt reste PUBLIC, et c'est un choix assumé — pas un état à restaurer.**
+Tranché le 2026-07-30 après avoir mesuré le gain (Actions gratuit) et nommé le
+coût (ce qui est cloné ou indexé ne se rétracte pas). Le modèle est donc
+**source-available, pas open source** : `LICENSE` à la racine dit
+« Proprietary Software — All rights reserved », et « produit fermé » dans
+`CLAUDE.md` §1 qualifie la LICENCE, pas la visibilité du dépôt. Ne pas lire
+« fermé » comme « à repasser en privé » : `gh repo edit --visibility private`
+n'est PAS une correction à appliquer.
+Ce qui reste vrai et vérifié avant la bascule : aucun identifiant dans les
+34 commits (9 015 lignes balayées, témoin validé), 0 secret Actions configuré,
+et le workflow ne se déclenche que sur `push`/`workflow_dispatch` — pas de
+`pull_request`, donc aucun fork ne peut exécuter de workflow. Refaire ces trois
+contrôles avant de rendre public un AUTRE dépôt.
 
 ### Un push sur ce dépôt coûte de l'ordre de 150 minutes de quota facturées
 Mesuré sur les runs 30467546532 / 30469650838 / 30471091956 : Windows 20 à
