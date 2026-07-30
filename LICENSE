@@ -1,0 +1,52 @@
+Tuple VST — Proprietary Software
+Copyright (c) 2026 Antoine Djermoune. All rights reserved.
+
+
+NO LICENSE IS GRANTED
+
+This repository is publicly visible. Public visibility does not grant any
+license, and does not place this software in the public domain.
+
+Except where explicitly stated otherwise below, no permission is granted to
+any person to use, copy, modify, merge, publish, distribute, sublicense, or
+sell this software or any part of it, in source or binary form.
+
+You may read this source code. You may not build a product from it,
+incorporate it into your own work, or redistribute it.
+
+Reading this code does not grant permission to reimplement it. The harmonic
+specification in `fixtures/` and the voicing engine are the substance of a
+commercial product.
+
+
+THIRD-PARTY COMPONENTS
+
+This software depends on components that remain governed by their own terms.
+They are fetched at configure time and are not redistributed by this
+repository.
+
+  JUCE 9.0.0                 https://github.com/juce-framework/JUCE
+                             Dual-licensed: AGPLv3 or the commercial JUCE
+                             license. This project uses the commercial JUCE
+                             license, not the AGPLv3 option.
+
+  clap-juce-extensions       https://github.com/free-audio/clap-juce-extensions
+  (54b3c326)                 MIT License.
+
+  CLAP                       https://github.com/free-audio/clap
+                             MIT License.
+
+  VST 3 SDK                  Bundled with JUCE 9. MIT License
+                             (Steinberg Media Technologies GmbH).
+                             VST is a trademark of Steinberg Media
+                             Technologies GmbH, registered in Europe and
+                             other countries.
+
+The terms above apply only to the code authored in this repository. Nothing
+here modifies, restricts, or extends the license of any third-party
+component.
+
+
+CONTACT
+
+For licensing enquiries: rawrnie@gmail.com
