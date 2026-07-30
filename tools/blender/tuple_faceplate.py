@@ -357,13 +357,41 @@ def mat(name, factory):
     return m
 
 
+# Le volume de la coque est DEBRANCHE, et c'est mesuré, pas supposé.
+#
+# Il faisait a lui seul franchir le plafond de closures de Cycles : le rendu
+# emettait en permanence « Maximum number of closures exceeded: 76 > 64 ».
+# Au-dela de 64, Cycles ABANDONNE les closures suivantes sans lever d'erreur —
+# on soupconnait donc que des composantes speculaires ou colorees tombaient en
+# silence, ce qui aurait explique d'un coup les deux plus gros ecarts mesures
+# contre la maquette.
+#
+# La sonde `closure_probe.py` a isole la cause : neutraliser le SSS ou la
+# transmission laisse le warning a 76, debrancher le Volume le fait tomber.
+# Et la comparaison des deux rendus pleine qualite par `detail_metrics.py`
+# donne les ONZE indicateurs identiques a moins d'un point de pourcentage
+# (sat_moy et sur_085 a 0,0 pres). Les deux images sont indiscernables a l'oeil.
+#
+# Donc : le plafond de closures n'explique AUCUN des ecarts, et le volume ne
+# rend rien de visible. Il est debranche pour l'hygiene — tant que ce warning
+# sort a chaque rendu, un futur depassement qui, lui, couterait quelque chose
+# passerait inapercu.
+#
+# Le remettre a True si la paroi s'epaissit : a 1,2 mm la profondeur optique
+# vaut 40 x 0,0012 = 0,048, soit environ 5 % de diffusion. C'est cette
+# minceur qui le rend inoperant, pas le reglage.
+SHELL_VOLUME = False
+
+
 def _shell(name):
-    """Polycarbonate translucide dépoli, avec volume — le « gameboy transparent ».
+    """Polycarbonate translucide dépoli — le « gameboy transparent ».
 
     Six mécanismes, un par point de la spécification matière. Voir la note en
-    tête de fichier. Rien ici n'est décoratif : retirer le volume rend la
-    laitance indépendante de l'épaisseur, retirer le bruit de rugosité rend le
-    plastique parfaitement moulé.
+    tête de fichier. Rien ici n'est décoratif : retirer le bruit de rugosité rend
+    le plastique parfaitement moulé.
+
+    Le volume est conditionné par `SHELL_VOLUME`, débranché par défaut — voir
+    la note au-dessus, la décision est mesurée.
     """
     m, nodes, links, bsdf = new_material(name)
     c = SPEC["chassis"]
@@ -381,17 +409,21 @@ def _shell(name):
     # RENVOIE de la lumiere blanche en plus d'en transmettre.
     set_input(bsdf, ["Transmission Weight", "Transmission"], 0.80)
 
-    # SUBSURFACE SCATTERING, methode RANDOM WALK — le modele physiquement juste
-    # pour du plastique translucide, et il n'avait jamais ete active.
+    # SUBSURFACE SCATTERING, methode CHRISTENSEN-BURLEY.
     # La transmission modelise du VERRE : reflexion speculaire plus refraction.
     # Le polycarbonate laiteux des references d'Antoine fait autre chose — la
     # lumiere ENTRE dans la matiere, y diffuse, et ressort ailleurs. C'est un
     # BSSRDF, pas un BSDF de transmission.
-    # Doc Blender 5.2 (manual/render/shader_nodes/shader/principled.rst) :
-    # Random Walk « provides accurate results for thin and curved objects » —
-    # le cas exact d'une paroi de 1,2 mm — et « works best for closed meshes,
-    # overlapping faces and holes can cause problems ». La coque est percee de
-    # puits booleens : si des artefacts apparaissent, la cause est la.
+    #
+    # RANDOM WALK A ETE ESSAYE PUIS ECARTE, ne pas y revenir sans relire ceci.
+    # La doc Blender 5.2 (manual/render/shader_nodes/shader/principled.rst) le
+    # donne pourtant comme le plus juste ici — « provides accurate results for
+    # thin and curved objects », le cas exact d'une paroi de 1,2 mm. Mais elle
+    # avertit dans la meme page : « works best for closed meshes, overlapping
+    # faces and holes can cause problems ». La coque EST percee de puits
+    # booleens, et le risque s'est realise : rectangles noirs sur les ecrans
+    # (constate au rendu, voir le journal de Tuple_3D). Burley n'a pas cette
+    # sensibilite a la topologie et rend le meme aspect laiteux ici.
     # Radius est une DISTANCE (metres), Scale un facteur applique par-dessus.
     bsdf.subsurface_method = "BURLEY"
     set_input(bsdf, ["Subsurface Weight", "Subsurface"], 0.0)
@@ -413,6 +445,17 @@ def _shell(name):
         if _sock.name == "Subsurface IOR":
             _sock.default_value = 1.585
             break
+    else:
+        # Fail-fast : sans ce garde, un renommage du socket dans une autre
+        # version de Blender laisserait l'IOR de diffusion au defaut, en
+        # silence — la coque rendrait faux sans que rien ne le signale, et
+        # c'est exactement le genre d'ecart qu'on passe des heures a chercher
+        # ailleurs. Meme regime que le reste du fichier : ce qui rate se voit.
+        raise RuntimeError(
+            "socket 'Subsurface IOR' introuvable sur le Principled — nom "
+            "change dans cette version de Blender, verifier l'API avant de "
+            "relancer."
+        )
 
     coord = nodes.new("ShaderNodeTexCoord")
 
@@ -537,27 +580,27 @@ def _shell(name):
     # -- laiteux : VRAI volume, la diffusion dépend de l'épaisseur ----------
     # Densités élevées assumées : la paroi ne fait que 1,2 mm, une densité
     # faible n'y produirait aucune profondeur optique mesurable.
-    absorb = nodes.new("ShaderNodeVolumeAbsorption")
-    absorb.inputs["Color"].default_value = (0.86, 0.91, 0.88, 1.0)
-    absorb.inputs["Density"].default_value = 25.0
-    scatter = nodes.new("ShaderNodeVolumeScatter")
-    scatter.inputs["Color"].default_value = (0.93, 0.96, 0.94, 1.0)
-    # A RETENIR : sur une paroi de 1,2 mm, ce volume est MARGINAL. Profondeur
-    # optique = densité x épaisseur = 40 x 0.0012 = 0.048, soit environ 5 % de
-    # diffusion. Le balayage 0/40/120/340 l'a montre : la laitance existait
-    # déjà a densité 0, et 340 ne faisait que noyer les composants internes.
-    # On garde le volume parce qu'il est physiquement juste et qu'il comptera
-    # si la paroi s'epaissit ou sur la tranche, ou le trajet est plus long —
-    # mais il ne faut PAS compter sur lui pour la laitance de la face.
-    scatter.inputs["Density"].default_value = 40.0
-    scatter.inputs["Anisotropy"].default_value = 0.25
-    add = nodes.new("ShaderNodeAddShader")
-    links.new(absorb.outputs["Volume"], add.inputs[0])
-    links.new(scatter.outputs["Volume"], add.inputs[1])
+    #
+    # Debranche par defaut : le balayage 0/40/120/340 avait deja montre que la
+    # laitance existait a densite 0 et que 340 ne faisait que noyer les
+    # composants internes ; la mesure du 2026-07-30 a acheve de le disqualifier
+    # en montrant qu'il coutait 12 closures abandonnees en silence pour un
+    # ecart nul sur les onze indicateurs. Voir SHELL_VOLUME.
     output = nodes.get("Material Output")
     if output is None:
         raise RuntimeError("pas de Material Output dans %r" % name)
-    links.new(add.outputs[0], output.inputs["Volume"])
+    if SHELL_VOLUME:
+        absorb = nodes.new("ShaderNodeVolumeAbsorption")
+        absorb.inputs["Color"].default_value = (0.86, 0.91, 0.88, 1.0)
+        absorb.inputs["Density"].default_value = 25.0
+        scatter = nodes.new("ShaderNodeVolumeScatter")
+        scatter.inputs["Color"].default_value = (0.93, 0.96, 0.94, 1.0)
+        scatter.inputs["Density"].default_value = 40.0
+        scatter.inputs["Anisotropy"].default_value = 0.25
+        add = nodes.new("ShaderNodeAddShader")
+        links.new(absorb.outputs["Volume"], add.inputs[0])
+        links.new(scatter.outputs["Volume"], add.inputs[1])
+        links.new(add.outputs[0], output.inputs["Volume"])
 
     m.use_backface_culling = False
     return m
