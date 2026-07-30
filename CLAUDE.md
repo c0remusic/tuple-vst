@@ -148,7 +148,7 @@ seule protection est la disjonction déclarée à l'avance.
 
 | zone | propriétaire |
 |---|---|
-| `source/domain/`, `source/app/`, `fixtures/`, `tests/` | Antoine |
+| `source/domain/`, `source/app/`, `fixtures/`, `tests/`, `tools/blender/` | Antoine |
 | `source/plugin/PluginEditor.*`, `tools/proof_hosts/`, CI | Stéphane |
 | `CMakeLists.txt`, `ARCHITECTURE.md`, `PRD.md`, `source/plugin/PluginProcessor.*` | **partagés** — sur `main`, en commit dédié |
 
