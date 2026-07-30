@@ -164,3 +164,43 @@ résoudre `Tuple.clap/Contents/MacOS/<binaire>`, tout en passant le chemin du
 **bundle d'origine** à `clap_entry->init()`, comme le veut la spec CLAP.
 Éviter `<filesystem>` pour ça : `CMAKE_OSX_DEPLOYMENT_TARGET` peut être sous le
 10.15 requis par `std::filesystem` de libc++ — `stat`/`opendir` suffisent.
+
+## Découvertes — 2026-07-30, rendu 3D (TTL 6 mois)
+
+### Sur un défaut optique, suspecter l'ÉCLAIRAGE avant le shader
+
+Trois passes de correction du shader polycarbonate pour un défaut qui n'en venait
+pas. La façade paraissait laiteuse et opaque au centre ; j'ai successivement
+incriminé la densité de diffusion volumique, la rugosité de surface, puis
+l'exposition. Les balayages de `tools/blender/sweep_plastic.py` ont tranché :
+
+- à **densité volumique 0**, la laitance était toujours là → le volume était
+  innocent, et à 340 il ne faisait que noyer les composants internes ;
+- à **lampe haute 0 W**, le panneau devenait parfaitement clair, PCB et puces
+  nettes → c'était son reflet spéculaire au centre du panneau ;
+- la **lampe arrière** était vue DIRECTEMENT en transmission à travers la coque :
+  un émetteur rectangulaire derrière un panneau transmissif se voit tel quel.
+
+Correctif : `ob.visible_transmission = False` sur `LIGHT_back`. Les drapeaux de
+visibilité par type de rayon séparent « éclairer » de « être vu » —
+l'échantillonnage direct de la lumière n'est pas affecté, la lampe continue
+d'éclairer l'intérieur.
+
+**À retenir** : un défaut qui ressemble à de la matière (laitance, voile,
+opacité) sur un objet transmissif est d'abord un candidat ÉCLAIRAGE. Le shader
+ne se touche qu'après avoir éteint les sources une par une.
+
+### La valeur témoin à zéro est ce qui distingue « mal réglé » de « sans effet »
+
+Chaque balayage de `sweep_plastic.py` inclut une valeur à 0. C'est elle, et elle
+seule, qui a innocenté le volume et incriminé les lampes. Sans témoin, un
+paramètre mal réglé et un paramètre sans aucun effet produisent la même
+impression : « ça ne change pas assez ».
+
+### Le volume est marginal sur une paroi mince
+
+Profondeur optique = densité x épaisseur. À 40 sur 1,2 mm : 0,048, soit environ
+5 % de diffusion. Une densité choisie à l'estime sur un matériau volumique est
+toujours fausse, parce que l'effet dépend d'un produit et pas de la densité
+seule. Ne pas compter sur le volume pour la laitance d'une face mince ; il
+comptera sur la tranche, où le trajet est plus long.
