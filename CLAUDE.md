@@ -1,8 +1,10 @@
 # Tuple VST
 
-Plugin d'accords **MIDI-only** pour DAW, en VST3 et CLAP. Produit **fermé et
-commercial**, distinct de Tuple (le device Max for Live, qui reste MIT et
-gratuit). Deux développeurs : Antoine sous Windows, Stéphane sous macOS.
+Plugin d'accords **MIDI-only** pour DAW, en VST3 et CLAP. Produit **commercial
+sous licence propriétaire** (`LICENSE` : all rights reserved), distinct de Tuple
+(le device Max for Live, qui reste MIT et gratuit). Le dépôt est **public et le
+reste** : source-available, pas open source — la licence est fermée, pas la
+visibilité. Deux développeurs : Antoine sous Windows, Stéphane sous macOS.
 
 Le QUOI vit dans `PRD.md`. Le COMMENT dans `ARCHITECTURE.md`. Le plan courant
 dans `docs/plans/`. Ce fichier ne porte que les invariants — ce qu'on ne peut
@@ -45,16 +47,16 @@ device Max for Live, et les noms évoquant un genre musical ont disparu.
 ## Les trois couches, et la règle qui les tient
 
 ```
-source/domain/   règles harmoniques pures — ChordSpec, Voicing, VoiceLeading
+source/domain/   règles harmoniques pures — ChordSpec, Voicing, Scale, Key
 source/app/      cas d'usage — BuildGrid, PlayChord, ReleaseAll, TransportStop
 source/plugin/   JUCE, adaptateurs compris — Processor, Editor, MidiEmitter
 ```
 
-**Rien sous `plugin/` n'inclut un en-tête JUCE.** C'est la seule règle de
+**Rien sous `domain/` ni `app/` n'inclut un en-tête JUCE.** C'est la seule règle de
 structure, et elle se vérifie mécaniquement :
 
 ```bash
-grep -ri "juce" source/domain/ source/app/
+grep -rniE '#\s*include\s*[<"][^>"]*juce' source/domain/ source/app/
 ```
 
 Elle doit ne rien retourner. C'est ce qui permet au binaire de test de démarrer
@@ -147,7 +149,7 @@ seule protection est la disjonction déclarée à l'avance.
 | zone | propriétaire |
 |---|---|
 | `source/domain/`, `source/app/`, `fixtures/`, `tests/` | Antoine |
-| `source/plugin/PluginEditor.*`, `hosts/`, CI | Stéphane |
+| `source/plugin/PluginEditor.*`, `tools/proof_hosts/`, CI | Stéphane |
 | `CMakeLists.txt`, `ARCHITECTURE.md`, `PRD.md`, `source/plugin/PluginProcessor.*` | **partagés** — sur `main`, en commit dédié |
 
 `fixtures/` est **la spécification du comportement harmonique**. On ne modifie
