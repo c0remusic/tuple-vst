@@ -10,5 +10,16 @@ CMakeUserPresets.json
 # tools/blender/tuple_faceplate.py et les balayages. Le code est suivi, pas
 # les images qu'il produit.
 tools/blender/renders/
+
+# Scene Blender serialisee : regenerable par
+#   blender --background --python tuple_faceplate.py -- --save-blend tuple-master.blend
+# Elle sert a OUVRIR la scene a l'ecran, pas a la produire — le script reste la
+# source. La versionner ferait entrer un binaire de 450 Ko qui change a chaque
+# rendu et que personne ne peut relire en diff.
+tools/blender/*.blend
+
+# Etat local de la boucle ralph-loop, propre a une session.
+.claude/ralph-loop.local.md
+
 __pycache__/
 .impeccable/
