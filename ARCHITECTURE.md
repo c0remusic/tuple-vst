@@ -64,7 +64,7 @@ lenteur est un coût assumé, pas un oubli.
 | couche | technologie | licence | note |
 |---|---|---|---|
 | Tout le code | **C++17**, **JUCE 9** | JUCE (voir §3) | Un langage, un écosystème, une chaîne de build. |
-| Formats | **VST3** + **CLAP** | — | ⚠️ **JUCE ne produit pas de CLAP nativement** : il faut `clap-juce-extensions` ou `clap-wrapper`, tous deux MIT. |
+| Formats | **VST3** + **CLAP** | — | ⚠️ **JUCE ne produit pas de CLAP nativement.** Retenu : `clap-juce-extensions` (MIT), épinglé au SHA `54b3c326`. |
 | Build | **CMake** | — | Voie recommandée par JUCE. |
 | Compilateurs | **MSVC 14.44** (Windows) · **Clang/Xcode** (macOS) | — | MSVC et MSBuild déjà installés côté Windows. |
 | Paramètres et état | `AudioProcessorValueTreeState` | JUCE | Le pont thread-safe imposé par JUCE entre l'UI et le thread audio. Accès atomique, automation, presets, sans lock sur le thread audio. |
@@ -360,7 +360,9 @@ Une PR touchant `fixtures/` ne se merge jamais sans revue d'Antoine.
    avant la première version publique.
 2. **Le moteur d'expression** — un moteur servant le jeu et l'export, ou deux
    chemins. Couture d'architecture : à trancher avant d'écrire le moteur.
-3. **`clap-juce-extensions` ou `clap-wrapper`** pour le CLAP. Les deux sont MIT.
+3. ~~`clap-juce-extensions` ou `clap-wrapper` pour le CLAP.~~ **Tranché :
+   `clap-juce-extensions`**, épinglé au SHA `54b3c326` dans `CMakeLists.txt`,
+   licence MIT.
 4. **AU / Logic** dans la v1 ou après.
 5. **Apple Silicon seul ou binaire universel** — dépend du Mac de Stéphane.
 6. **Le compte Apple Developer** (99 $/an) et la notarisation — obligatoires pour
