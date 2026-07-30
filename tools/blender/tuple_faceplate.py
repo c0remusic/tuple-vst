@@ -382,6 +382,46 @@ def mat(name, factory):
 # minceur qui le rend inoperant, pas le reglage.
 SHELL_VOLUME = False
 
+# Poids de la diffusion sous-surfacique de la coque.
+#
+# Le modele physiquement juste pour du polycarbonate laiteux est le subsurface
+# scattering, pas la transmission : la transmission modelise du verre, tandis
+# qu'un plastique diffusant fait ENTRER la lumiere, la disperse dans
+# l'epaisseur et la laisse ressortir ailleurs.
+#
+# La valeur etait a 0.0 alors que le journal annoncait 0,30 retenu depuis la
+# session du 2026-07-30 — tout le bloc de reglages qui suit (methode, rayon,
+# echelle, anisotropie, IOR de diffusion) etait donc sans effet. Repris a 0,30,
+# la valeur que la mesure avait retenue.
+SHELL_SUBSURFACE = 0.30
+
+# Force de l'environnement HDRI. Il vient EN PLUS des quatre area lights, dont
+# les positions et puissances sont mesurees : son role est le CONTENU des
+# reflets, pas la quantite de lumiere. Le balayage du 2026-07-30 montre que ce
+# reglage est peu sensible — de 0,15 a 0,95 la mediane bouge de 0,011 et le
+# gradient gauche-droite pas du tout.
+HDRI_STRENGTH = 0.30
+
+# Exposition de la transforme de vue, en EV. Surchargeable par --exposure.
+#
+# ETAIT A -4.32, valeur posee avant le branchement de l'HDRI et jamais reprise
+# depuis : l'image sortait a mediane -30 % de la maquette. Balayage du
+# 2026-07-30 a HDRI 0,30 et SSS 0,30, mesures par detail_metrics.py :
+#
+#            mediane    p75    p25   sur_085  contraste_local
+#   -3.6 EV   -12,0 %  +0,1 % +17,9 %  +33,8 %   -20,3 %
+#   -3.9 EV   -20,1 %  -8,8 %  +6,8 %  -49,0 %   -25,5 %
+#
+# -3,6 retenu : meilleur sur la mediane, le p75 et le contraste local, et c'est
+# a cette valeur que les familles harmoniques des pads redeviennent lisibles.
+# Le prix assume est +33,8 % de pixels au-dessus de 0,85.
+#
+# CE QUE L'EXPOSITION NE PEUT PAS CORRIGER, et il ne faut pas le lui demander :
+# l'ecart interquartile du rendu vaut 0,31 a 0,37 contre 0,41 sur la maquette.
+# Ce deficit de contraste est un probleme d'albedo, pas de niveau — une
+# exposition ne fait que glisser toute la distribution du meme cote.
+EXPOSURE_EV = -3.6
+
 
 def _shell(name):
     """Polycarbonate translucide dépoli — le « gameboy transparent ».
@@ -426,7 +466,12 @@ def _shell(name):
     # sensibilite a la topologie et rend le meme aspect laiteux ici.
     # Radius est une DISTANCE (metres), Scale un facteur applique par-dessus.
     bsdf.subsurface_method = "BURLEY"
-    set_input(bsdf, ["Subsurface Weight", "Subsurface"], 0.0)
+    # ETAIT A 0.0, ce qui rendait INERTE tout le bloc de reglages ci-dessous —
+    # methode, rayon, echelle, anisotropie, IOR de diffusion : rien de tout cela
+    # n'agit a poids nul. Le journal annoncait pourtant « Burley a poids 0,30
+    # retenu » depuis la session du 2026-07-30. Un reglage decrit partout et
+    # actif nulle part ; releve le 2026-07-30 par introspection de la scene.
+    set_input(bsdf, ["Subsurface Weight", "Subsurface"], SHELL_SUBSURFACE)
     # 2,2 mm : environ deux fois l'epaisseur de paroi, de quoi diffuser sans
     # effacer ce qui est derriere. Legerement plus long dans le rouge, comme
     # tout milieu diffusant reel.
@@ -2103,8 +2148,15 @@ def build_lighting():
         # modele et dont les valeurs sont mesurees. A pleine puissance il
         # doublerait l'eclairage et ferait tout sauter. Son role ici est le
         # CONTENU des reflets, pas la quantite de lumiere.
-        bg.inputs["Strength"].default_value = 0.95
-        log("environnement : HDRI studio 4k (CC0) a 0.95, rotation 122 deg")
+        # RAMENE A 0.30 le 2026-07-30. La valeur posee etait 0.95 alors que ce
+        # commentaire et le journal annoncaient tous deux 0,30 — trois sources,
+        # deux d'accord, et c'est le code qui decide. Le balayage 0,15 / 0,30 /
+        # 0,60 / 0,95 montre que l'ecart est mineur (mediane 0,597 a 0,608,
+        # gradient gauche-droite inchange a +0,17) : on aligne donc le code sur
+        # l'intention documentee, sans rien perdre de mesurable.
+        bg.inputs["Strength"].default_value = HDRI_STRENGTH
+        log("environnement : HDRI studio 4k (CC0) a %.2f, rotation 122 deg"
+            % HDRI_STRENGTH)
 
     else:
         log("environnement : couleur unie (HDRI absent de %s)" % hdri)
@@ -2145,7 +2197,7 @@ def build_lighting():
     # Balayage -2.1 / -2.7 / -3.3 / -3.9. Deux cibles fausses l'ont precedee :
     # une heuristique generique, puis les mesures d'une image que j'avais prise
     # pour la maquette sans l'ouvrir. Ne pas retoucher sans re-mesurer.
-    view.exposure = -4.32
+    view.exposure = EXPOSURE_EV
     log("éclairage : 2 Area + 1 haute, cyclo gris chaud, exposition %.1f EV"
         % view.exposure)
     return aim
@@ -2293,7 +2345,8 @@ def build(plastic_only=False):
 
 def parse_args(argv):
     args = {"render": False, "engine": "CYCLES", "samples": None,
-            "percent": None, "save_blend": None, "plastic": False}
+            "percent": None, "save_blend": None, "plastic": False,
+            "exposure": None, "suffix": None}
     if "--" not in argv:
         return args
     rest = argv[argv.index("--") + 1:]
@@ -2310,6 +2363,15 @@ def parse_args(argv):
             args["percent"] = int(rest[i + 1]); i += 2
         elif tok == "--save-blend":
             args["save_blend"] = rest[i + 1]; i += 2
+        elif tok == "--exposure":
+            # Surcharge EXPOSURE_EV pour comparer deux variantes sans editer le
+            # fichier entre deux rendus — une edition entre deux rendus rend la
+            # comparaison ininterpretable si autre chose bouge en meme temps.
+            args["exposure"] = float(rest[i + 1]); i += 2
+        elif tok == "--suffix":
+            # Evite qu'une variante ecrase la precedente : renders/ est ignore
+            # par git, un PNG ecrase est perdu.
+            args["suffix"] = rest[i + 1]; i += 2
         elif tok == "--engine":
             name = rest[i + 1].upper()
             mapping = {"CYCLES": "CYCLES", "EEVEE": "BLENDER_EEVEE",
@@ -2323,8 +2385,12 @@ def parse_args(argv):
 
 
 def main():
+    global EXPOSURE_EV
     args = parse_args(sys.argv)
     log("Blender %s" % bpy.app.version_string)
+    if args["exposure"] is not None:
+        EXPOSURE_EV = args["exposure"]
+        log("exposition surchargee en ligne de commande : %+.2f EV" % EXPOSURE_EV)
     build(plastic_only=args["plastic"])
 
     out = os.path.join(_HERE, "renders",
@@ -2356,7 +2422,8 @@ def main():
         log(".blend écrit : %s" % path)
 
     if args["render"]:
-        scene.render.filepath = os.path.join(out, proto.CONFIG["render"]["output_prefix"] + "0001")
+        stem = proto.CONFIG["render"]["output_prefix"] + (args["suffix"] or "0001")
+        scene.render.filepath = os.path.join(out, stem)
         log("rendu...")
         bpy.ops.render.render(write_still=True)
         written = scene.render.filepath + ".png"
