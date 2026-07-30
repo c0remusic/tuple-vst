@@ -78,7 +78,10 @@ Non négociables. Le troisième est une promesse produit.
 3. **Toute note-on a exactement une note-off**, sur les quatre déclencheurs :
    changement d'accord, arrêt du transport, `releaseResources`, destruction du
    plugin. C'est le bug que le concurrent traîne depuis 2020 ; c'est notre
-   argument. Il est testé dans `tests/noteoff_tests.cpp`.
+   argument. Les quatre sont testés au niveau des fonctions pures dans
+   `tests/noteoff_tests.cpp`. Le déclencheur « changement d'accord » n'est PAS
+   encore exercé de bout en bout : `playChord` n'a aucun appelant dans
+   `source/plugin/` tant que Trigger 1 n'est pas câblé (vérifié 2026-07-30).
 4. Les notes sont placées à leur **offset d'échantillon exact**
    (`addEvent(msg, sampleOffset)`), jamais à 0.
 
