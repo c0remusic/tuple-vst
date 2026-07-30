@@ -123,15 +123,14 @@ void TupleProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     // reserved once in prepareToPlay() (Global Constraints, see its
     // declaration in PluginProcessor.h). clear() is Array::clearQuick() —
     // it resets the event count without freeing the reserved storage, so
-    // the emit() call below never reallocates. Caveat, named rather than
-    // hidden: swapWith() at the end of this function exchanges storage with
-    // the host's midiMessages buffer, so from the NEXT block on this member
-    // holds whatever capacity that buffer had — prepareToPlay()'s reserve
-    // only strictly guarantees the first block after it runs. Closing that
-    // gap fully would mean never handing our storage to the host at all,
-    // which is a larger redesign than this correction's scope; the actual
-    // proof point for zero-allocation, per Global Constraints, is
-    // RealtimeSanitizer, not this comment.
+    // the emit() call below never reallocates. The reserve holds for EVERY
+    // block, not just the first: this function no longer hands its storage to
+    // the host. It used to end on swapWith(), which exchanged buffers — the
+    // member then carried whatever capacity the host's buffer happened to have,
+    // so prepareToPlay()'s reserve only strictly covered the first block and
+    // any later emit() could allocate on the audio thread. The comment that
+    // stood here named that gap and judged closing it "a larger redesign";
+    // it is two lines (see the end of this function). Audit 2026-07-30.
     outgoingBuffer.clear();
 
     // The falling-edge decision itself lives in tuple::app::decideTransportStop
@@ -167,7 +166,22 @@ void TupleProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     if (stopDecision.advanceWasPlaying)
         wasPlaying = isPlayingNow;
 
-    midiMessages.swapWith (outgoingBuffer);
+    // COPIE, jamais swapWith(). L'echange donnerait a outgoingBuffer la capacite
+    // du buffer de l'hote, sans aucune garantie qu'elle atteigne la reserve de
+    // prepareToPlay() — le prochain addEvent() de emit() pourrait alors allouer
+    // DANS le thread audio, ce que ensureSize() existe precisement pour empecher.
+    // Copier laisse la reserve du membre intacte, indefiniment.
+    //
+    // Ce que voit l'hote est identique: il recevait le contenu de outgoingBuffer,
+    // il le recoit toujours. Seule difference, invisible dehors: outgoingBuffer
+    // garde son propre contenu au lieu de recuperer l'ancien buffer d'entree —
+    // sans effet, le clear() en tete de cette fonction l'efface au bloc suivant.
+    //
+    // addEvents(src, startSample, numSamples, sampleDeltaToAdd): numSamples < 0
+    // prend TOUS les evenements a partir de startSample (juce_MidiBuffer.h:240-247,
+    // verifie sur la copie vendored, pas de memoire).
+    midiMessages.clear();
+    midiMessages.addEvents (outgoingBuffer, 0, -1, 0);
 }
 
 juce::AudioProcessorEditor* TupleProcessor::createEditor()
