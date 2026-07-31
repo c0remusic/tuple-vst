@@ -2273,7 +2273,11 @@ def build_lighting():
     # Plus clair et plus proche : c'est ce fond que la lumière transmise par le
     # pourtour de la coque capte. À 0.22 d'albédo et loin derrière, elle ne
     # captait que du noir.
-    cyclo = mat("MAT_cyclo", lambda n: _plastic(n, (0.44, 0.425, 0.40), 0.60))
+    # ECLAIRCI et RECHAUFFE le 2026-07-31, sur echantillonnage direct des quatre
+    # coins de la maquette : son fond y vaut 0,65 a 0,70 de luminance, avec les
+    # rapports de canaux 1 / 0,955 / 0,92. Le rendu sortait a 0,55-0,57, gris et
+    # froid. Rapport applique a l'albedo lineaire pour viser 0,67 en sortie.
+    cyclo = mat("MAT_cyclo", lambda n: _plastic(n, (0.70, 0.668, 0.644), 0.60))
     back = create_box("BACKDROP_cyclo", (fw * 5.0, fh * 5.0, p(2.0)),
                       location=(0.0, 0.0, -p(BODY_D) - fw * 1.05),
                       collection="BACKDROP")
