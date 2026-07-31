@@ -47,6 +47,11 @@ PCB_GAP = 0.0025          # 2,5 mm entre la face arriere de la plaque et la cart
 LIP_W = 0.0068            # 34 px de maquette
 LIP_D = 0.0052            # 26 px
 WALL_EP = 0.0012          # 1,2 mm de paroi, comme WALL dans tuple_faceplate
+# La carte ne couvre pas toute la plaque : elle s'arrete a 96 % de ses cotes.
+# Une SEULE declaration, utilisee a la fois pour la dimensionner et pour
+# convertir les coordonnees de texture en coordonnees monde — les deux avaient
+# diverge, et les percages tombaient a cote des trous que la carte dessine.
+PCB_ECHELLE = 0.96
 
 
 def log(m):
@@ -373,6 +378,9 @@ FENETRES = (
     (0.045, 0.135, 0.235, 0.195),
 )
 
+# 2560x1440 : « on voit rien » a 900x560. Ratio 16:9, celui de la façade
+# (323 x 182 mm), pour que la plaque remplisse le cadre sans bande morte.
+LAB_W, LAB_H = 2560, 1440
 BK_TRANSMISSION = 0.55
 BK_ROUGHNESS = 0.16
 SSS_MM = 0.06
@@ -411,7 +419,7 @@ def batir_scene(nom_mat, remplir, gap=None, emission=None, internes=None):
                                                   else gap)))
     pcb = bpy.context.active_object
     pcb.name = "PCB"
-    pcb.scale = (PLAQUE_W * 0.96, PLAQUE_H * 0.96, 1.0)
+    pcb.scale = (PLAQUE_W * PCB_ECHELLE, PLAQUE_H * PCB_ECHELLE, 1.0)
     bpy.ops.object.transform_apply(scale=True)
 
     mp = bpy.data.materials.new("MAT_pcb_lab")
@@ -480,20 +488,32 @@ def batir_scene(nom_mat, remplir, gap=None, emission=None, internes=None):
     # aux coordonnees ou la texture les dessine, pas a des endroits inventes.
     coupeurs = []
 
+    def _uv_monde(u, v):
+        """Coordonnees de TEXTURE (0-1 sur la carte) -> coordonnees monde.
+
+        Point unique de conversion. Il n'existait pas : chaque appel refaisait
+        le calcul a la main avec PLAQUE_W, c'est-a-dire la largeur de la PLAQUE,
+        alors que u et v sont normalises sur la CARTE, qui n'en couvre que 96 %.
+        Les percages sortaient donc decales de 4 %, ecart nul au centre et
+        maximal aux bords — exactement ce qu'Antoine a vu sur les trous de vis.
+        """
+        return ((u - 0.5) * PLAQUE_W * PCB_ECHELLE,
+                (0.5 - v) * PLAQUE_H * PCB_ECHELLE)
+
     def _perce_rond(nom_p, u, v, rayon_mm):
         bpy.ops.mesh.primitive_cylinder_add(
             vertices=64, radius=rayon_mm / 1000.0, depth=PLAQUE_D * 4.0,
-            location=((u - 0.5) * PLAQUE_W, (0.5 - v) * PLAQUE_H, 0.0))
+            location=_uv_monde(u, v) + (0.0,))
         c = bpy.context.active_object
         c.name = nom_p
         c.hide_render = True
         coupeurs.append(c)
 
     def _perce_rect(nom_p, u0, v0, u1, v1):
-        c = boite(nom_p, ((u1 - u0) * PLAQUE_W, (v1 - v0) * PLAQUE_H,
+        c = boite(nom_p, ((u1 - u0) * PLAQUE_W * PCB_ECHELLE,
+                          (v1 - v0) * PLAQUE_H * PCB_ECHELLE,
                           PLAQUE_D * 4.0),
-                  (((u0 + u1) / 2.0 - 0.5) * PLAQUE_W,
-                   (0.5 - (v0 + v1) / 2.0) * PLAQUE_H, 0.0))
+                  _uv_monde((u0 + u1) / 2.0, (v0 + v1) / 2.0) + (0.0,))
         c.hide_render = True
         coupeurs.append(c)
 
@@ -518,7 +538,8 @@ def batir_scene(nom_mat, remplir, gap=None, emission=None, internes=None):
             # Le percage de la coque passe la VIS, pas la couronne : il est plus
             # etroit que le disque dore de la carte, qui est la pastille de
             # cuivre autour du trou.
-            rayon_mm = vis["diam_px"] / tw * PLAQUE_W * 1000.0 * 0.30
+            rayon_mm = (vis["diam_px"] / tw * PLAQUE_W * PCB_ECHELLE
+                        * 1000.0 * 0.30)
             _perce_rond("CUT_VIS%d" % i, vis["u"], vis["v"], rayon_mm)
         log("%d trous de vis perces, alignes sur la carte" % len(_v["vis"]))
     else:
@@ -537,8 +558,7 @@ def batir_scene(nom_mat, remplir, gap=None, emission=None, internes=None):
         bpy.ops.mesh.primitive_cylinder_add(
             vertices=64, radius=(ENC_RAYON_MM + 4.5) / 1000.0,
             depth=BOSSAGE_MM / 1000.0,
-            location=((u - 0.5) * PLAQUE_W, (0.5 - ENC_V) * PLAQUE_H,
-                      PLAQUE_D / 2.0 + BOSSAGE_MM / 2000.0))
+            location=_uv_monde(u, ENC_V) + (PLAQUE_D / 2.0 + BOSSAGE_MM / 2000.0,))
         bo = bpy.context.active_object
         bo.name = "BOSS_ENC%d" % i
         bevel(bo, 0.0012, segments=4)
@@ -558,8 +578,7 @@ def batir_scene(nom_mat, remplir, gap=None, emission=None, internes=None):
         bpy.ops.mesh.primitive_cylinder_add(
             vertices=48, radius=(ENC_RAYON_MM - 1.2) / 1000.0,
             depth=0.010,
-            location=((u - 0.5) * PLAQUE_W, (0.5 - ENC_V) * PLAQUE_H,
-                      PLAQUE_D / 2.0 - 0.005))
+            location=_uv_monde(u, ENC_V) + (PLAQUE_D / 2.0 - 0.005,))
         pot = bpy.context.active_object
         pot.name = "POT_%d" % i
         pot.data.materials.append(m_pot)
@@ -696,6 +715,9 @@ def main():
     if "--only" in argv:
         seul = argv[argv.index("--only") + 1]
     emission = None
+    if "--res" in argv:
+        globals()["LAB_W"], globals()["LAB_H"] = (
+            int(v) for v in argv[argv.index("--res") + 1].split("x"))
     if "--emission" in argv:
         emission = float(argv[argv.index("--emission") + 1])
     gaps = None
@@ -716,8 +738,12 @@ def main():
     for nom, gap in paires:
         scene = batir_scene("MAT_lab_" + nom, CANDIDATS[nom], gap=gap,
                             emission=emission)
-        scene.render.resolution_x = 900
-        scene.render.resolution_y = 560
+        # 900x560 etait illisible des qu'on regardait un percage ou une arete —
+        # « ON VOIT RIEN ». Le banc sert a juger une matiere dans le detail,
+        # donc il rend a une definition ou le detail existe. Le cout reste
+        # modeste : la scene ne porte qu'une plaque et une carte.
+        scene.render.resolution_x = LAB_W
+        scene.render.resolution_y = LAB_H
         scene.render.resolution_percentage = 100
         scene.render.image_settings.file_format = "PNG"
         scene.view_settings.view_transform = "Standard"

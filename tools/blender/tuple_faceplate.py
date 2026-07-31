@@ -1734,7 +1734,19 @@ def build_body():
                 % chemin_cpn)
         with open(chemin_cpn, encoding="utf-8") as _f:
             _data = _json.load(_f)
+        # `tw`/`th` ne servent PLUS a placer quoi que ce soit — voir la note
+        # au-dessus de la boucle. Ils gardent une seule fonction : verifier que
+        # la texture a bien le format de la maquette. Une carte au mauvais
+        # rapport d'aspect placerait tous les composants de travers en Y, et
+        # rien ne le signalerait puisque les coordonnees sont des ratios.
         tw, th = _data["texture"]
+        if abs((tw / th) - (REF_W / REF_H)) > 0.01:
+            raise RuntimeError(
+                "la carte fait %dx%d, rapport %.3f, quand la maquette vaut "
+                "%.3f. Les composants sont places par ratio : un rapport "
+                "different les etirerait en Y sans qu'aucun d'eux ne sorte de "
+                "la carte, donc sans que rien ne le signale."
+                % (tw, th, tw / th, REF_W / REF_H))
         # Un materiau par COULEUR mesuree, arrondie au centieme : la carte porte
         # 96 composants mais bien moins de teintes distinctes, et creer un
         # materiau par objet gonflerait la scene pour rien.
@@ -1754,14 +1766,29 @@ def build_body():
                     lambda n, c=lin: _plastic(n, c, 0.46))
             return _cache_mat[cle]
 
+        # BUG CORRIGE le 2026-07-31, signale par Antoine sur le banc : « les
+        # trous perces dans la facade ne sont pas alignes avec les trous dans la
+        # pcb ». Meme faute ici.
+        #
+        # Les coordonnees du JSON sont des RATIOS (0-1). Elles etaient
+        # converties en pixels en les multipliant par `tw`, la largeur de la
+        # TEXTURE — alors que px_to_world attend des pixels de MAQUETTE
+        # (REF_W = 1672). Tant que la texture faisait 1672 de large les deux
+        # coincidaient et rien ne se voyait ; la carte 4K d'Antoine fait 3840, et
+        # tout s'est retrouve multiplie par 2,3 d'un coup.
+        #
+        # C'est le piege classique de la grandeur homonyme : `tw` et REF_W sont
+        # tous deux « une largeur en pixels », mais pas dans le meme repere. Le
+        # ratio est desormais converti dans le repere de la maquette, le seul que
+        # px_to_world connaisse, et `tw`/`th` ne servent plus qu'a la mesure.
         poses = 0
         for c in _data["composants"]:
-            cx_px = (c["x"] + c["w"] / 2.0) * tw
-            cy_px = (c["y"] + c["h"] / 2.0) * th
+            cx_px = (c["x"] + c["w"] / 2.0) * REF_W
+            cy_px = (c["y"] + c["h"] / 2.0) * REF_H
             wx, wy = px_to_world(cx_px, cy_px)
             haut = c["haut_mm"] / 1000.0
             ob = create_box("PCBV_%03d" % poses,
-                            (c["w"] * tw * PX, c["h"] * th * PX, haut),
+                            (c["w"] * REF_W * PX, c["h"] * REF_H * PX, haut),
                             location=(wx, wy, pcb_z + p(0.8) + haut / 2.0),
                             collection="BODY")
             assign(ob, _mat_cpn(c["couleur"]))
