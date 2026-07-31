@@ -123,7 +123,13 @@ PX = 0.0002                        # 1 px = 0.2 mm  =>  façade 334.4 x 188.2 mm
 FACE_Z = 0.0                       # plan de la façade (z = 0)
 CUT_MARGIN = 8.0                   # débord des cutters devant la façade, en px
 WALL = 6.0                         # épaisseur de paroi de la coque, en px (1.2 mm)
-RIM = 2.4                          # largeur du filet de famille autour d'un pad, en px
+# RAMENE de 2,4 a 1,2 px le 2026-07-31. La gouttiere verticale entre deux
+# rangees vaut row_pitch - pad_h = 5 px ; un filet de 2,4 de chaque cote en
+# mangeait 4,8 et les filets de deux pads voisins se TOUCHAIENT. La matrice
+# lisait alors comme une grille continue, la ou la maquette montre 64 touches
+# separees par du fond visible. C'est ce vide, et lui seul, qui fait lire le
+# relief : sans lui il n'y a ni bord ni ombre de contact.
+RIM = 1.2                          # largeur du filet de famille autour d'un pad, en px
 ENGRAVE = 1.4                      # profondeur de gravure des libellés, en px (0.28 mm)
 CORNER_R = 17.0                    # rayon des coins du boîtier, en px (3.4 mm)
 BODY_D = 60.0                      # épaisseur du boîtier, en px (12 mm)
@@ -208,8 +214,12 @@ LAYOUT = {
         "row0_top": 181,
         "row_pitch": 55,
         "rows": 8,
-        "pad_w": 88,
-        "pad_h": 50,
+        # RECALES le 2026-07-31 sur la planche de detail x2 : une touche de la
+        # maquette mesure 79 x 51,5 px filet compris. Avec RIM = 1,2 le total
+        # rendu vaut 78,4 x 51,4. Les 88 px precedents debordaient de 20 % en
+        # largeur et fermaient la gouttiere horizontale.
+        "pad_w": 76,
+        "pad_h": 49,
         "degrees": ["I", "II", "III", "IV", "V", "VI", "VII", "Borrowed"],
         # une famille harmonique = une couleur
         "colors": ["cyan", "blue", "green", "yellow", "amber", "coral", "violet", "lavender"],
@@ -320,14 +330,33 @@ USE_BK_PLASTIC = False
 # son point de construction dans build_body().
 BACKING_PLATE = True
 
+# RELEVES le 2026-07-31. Ces valeurs sont en PIXELS de maquette, et PX vaut
+# 0,2 mm : les anciennes donnaient 0,64 mm de saillie a un pad et 0,52 mm a un
+# bouton. Un pad silicone de controleur depasse de 2 a 3 mm, un bouton de 1,5 a
+# 2 mm — les reliefs etaient donc quatre a cinq fois trop plats, ce qu'aucun
+# reglage de matiere ni d'eclairage ne pouvait rattraper.
+#
+# Mesure qui l'a etabli : pad_profile.py, creux de gouttiere entre deux touches
+# a 0,166 sur la maquette contre 0,028 sur le rendu — ratio 0,17. Un relief qui
+# ne depasse pas ne projette pas d'ombre, et c'est cette ombre qui separe les
+# touches sur la maquette.
+#
+# Plafond a ne pas franchir pour "well" : WALL vaut 6 px (1,2 mm de paroi). Un
+# creux plus profond que la paroi traverse la coque et laisse le fond de puits
+# flotter dans le vide interne.
 D = {
-    "well": 3.0,        # creux d'un puits
+    # Second reglage du 2026-07-31. A well 5,0 / pad 10,0 le fond de puits
+    # passait au NOIR : 15 px de denivele pour 18 px de gouttiere font un canyon
+    # que la lumiere n'atteint plus. La maquette montre l'inverse — du beige
+    # clair entre les touches, avec seulement une ombre courte sous chaque bord.
+    # Le denivele est donc ramene a 9 px pour 18 de large.
+    "well": 2.0,        # creux d'un puits (0,4 mm)
     "oled": 4.0,        # écran en retrait
-    "button": 2.6,      # bouton en saillie
-    "pad": 3.2,
+    "button": 5.0,      # bouton en saillie (1,0 mm)
+    "pad": 7.0,         # pad silicone en saillie (1,4 mm)
     "text": 0.6,        # décollement du texte, évite le z-fighting
     "screw": 1.6,
-    "block": 3.0,
+    "block": 5.0,
 }
 
 
@@ -395,6 +424,31 @@ SHELL_VOLUME = False
 # la valeur que la mesure avait retenue.
 SHELL_SUBSURFACE = 0.30
 
+# Substrat de PCB par le node group procedural apporte par Antoine, plutot que
+# par l'aplat vert sans pistes de `_pcb()`. Bascule en une ligne, les deux
+# chemins restent vivants. Voir _pcb_circuitboard() pour la provenance et la
+# reserve de licence.
+USE_CB_PCB = True
+CB_BLEND = os.path.normpath(os.path.join(r"C:\dev\Tuple_3D", "05_textures",
+                                          "circuitboard.blend"))
+# Densite du routage. Les coordonnees sont en OBJET, donc en metres : a 1.0 un
+# seul motif d'un metre couvrait une carte de 32 cm et le groupe ne se voyait
+# pas du tout.
+#
+# Balaye a 1 / 30 / 90 / 250 le 2026-07-31. L'indicateur seethrough.py preferait
+# 250 (0,69 contre 0,67), et il a ETE ECARTE : a 250 le motif tombe sous la
+# taille d'un composant et lit comme un semis de points colores, pendant que
+# l'ecart-type local — la grandeur meme que cet indicateur mesure — monte
+# precisement PARCE QUE c'est du bruit. A 90 la structure de la carte se lit.
+# Cas d'ecole de la regle 22 du CLAUDE.md global : quand l'indicateur et l'oeil
+# divergent, c'est l'indicateur qui a tort.
+CB_SCALE = 90.0
+CB_SEED = 1.0
+
+# Facteur applique a la TAILLE des quatre area lights, jamais a leur puissance.
+# Sert au balayage de durete d'ombre (-- --light-scale). 1.0 = taille d'origine.
+LIGHT_SCALE = 1.0
+
 # Force de l'environnement HDRI. Il vient EN PLUS des quatre area lights, dont
 # les positions et puissances sont mesurees : son role est le CONTENU des
 # reflets, pas la quantite de lumiere. Le balayage du 2026-07-30 montre que ce
@@ -438,16 +492,30 @@ def _shell(name):
     set_input(bsdf, "Base Color", (c[0], c[1], c[2], 1.0))
     set_input(bsdf, "Metallic", 0.0)
     set_input(bsdf, "IOR", 1.585)                       # polycarbonate
-    # LAITEUX, pas VITREUX. A 1.0 la coque est du verre pur : aucune composante
-    # diffuse propre, elle ne fait que transmettre ce qu'il y a derriere. Sa
-    # Base Color claire, fixee par 06_visual_spec.md, ne comptait donc pour
-    # RIEN dans le rendu.
-    # Mesure : la bande haute sortait a 0,40 de luminance contre 0,75 sur la
-    # maquette, et eclaircir la PCB de moitie ne l'a deplacee que de 0,02 —
-    # preuve que le sujet n'etait pas ce qu'on voit a travers, mais la matiere
-    # traversee. Les references d'Antoine montrent toutes un polycarbonate qui
-    # RENVOIE de la lumiere blanche en plus d'en transmettre.
-    set_input(bsdf, ["Transmission Weight", "Transmission"], 0.80)
+    # PORTEE de 0,80 a 1,00 le 2026-07-31, sur mesure et sur reference externe.
+    #
+    # Reference : un node tree de cartouche Game Boy Advance transparente
+    # partage par Antoine — meme famille de matiere que cette coque. Il transmet
+    # a 1,00, sans aucun subsurface, et pilote sa rugosite par une carte. Nos
+    # deux seuls ecarts avec lui etaient cette transmission et le subsurface ;
+    # les deux ont ete testes separement, pas ensemble.
+    #
+    # Mesure (seethrough.py : ecart-type LOCAL de luminance dans quatre zones ou
+    # la maquette montre du circuit sans panneau par-dessus) :
+    #     transmission 0,80                      ratio 0,51
+    #     transmission 1,00                      ratio 0,60
+    #     subsurface 0,30 -> 0,0, transmission egale : 0,51 -> 0,53, soit RIEN
+    # La bande haute, ou vivent les deux tiers des puces, DOUBLE : 0,16 -> 0,34.
+    #
+    # CROYANCE REVISEE. La note precedente disait : « a 1,0 la coque est du
+    # verre pur, aucune composante diffuse propre, sa Base Color ne compte pour
+    # rien ». C'est vrai du BSDF pris seul, et c'etait vrai quand elle a ete
+    # ecrite — SHELL_SUBSURFACE valait alors 0,0. Depuis qu'il vaut 0,30, c'est
+    # le subsurface qui fournit la composante diffuse : il porte a lui seul
+    # +13 % de luminance mediane (0,408 sans, 0,460 avec, a transmission 1,00).
+    # Les deux mecanismes se PARTAGENT le travail au lieu de se doubler, et
+    # c'est la transmission partielle qui posait le voile sur l'interieur.
+    set_input(bsdf, ["Transmission Weight", "Transmission"], 1.00)
 
     # SUBSURFACE SCATTERING, methode CHRISTENSEN-BURLEY.
     # La transmission modelise du VERRE : reflexion speculaire plus refraction.
@@ -926,7 +994,63 @@ def _pcb(name):
     return m
 
 
-def m_pcb():        return mat("MAT_pcb", _pcb)
+def _pcb_circuitboard(name):
+    """Substrat de PCB par le node group procedural `CircuitBoard`.
+
+    REMPLACANT FONCTIONNEL du motif de pistes que `_pcb()` avait renonce a
+    produire — voir sa note : deux tentatives procedurales maison, deux echecs
+    signales par Antoine (« le pcb est bizarre »), une en bandes ondulees, une
+    en mur de briques. Un routage reel est rectiligne, a angles droits ou a
+    45 degres, et c'est precisement ce que ce groupe sait faire.
+
+    Provenance : .blend apporte par Antoine le 2026-07-31, copie sous
+    05_textures/circuitboard.blend. 192 noeuds, entierement procedural (Voronoi,
+    Wave, White Noise, Math) — aucune texture image, donc rien a deplier ni a
+    telecharger. Interface : Vector, W (graine), Scale ; sorties BSDF et
+    Displacement.
+
+    LICENCE NON VERIFIEE. Le projet impose du CC0 ; l'origine de ce fichier
+    n'est pas etablie depuis son contenu. A trancher avant toute livraison.
+
+    Displacement laisse en BUMP : la carte est vue de face a travers une coque
+    depolie, un deplacement reel exigerait de subdiviser une surface de 32 cm
+    pour un relief que le depoli mange de toute façon.
+    """
+    if "CircuitBoard" not in bpy.data.node_groups:
+        if not os.path.exists(CB_BLEND):
+            raise RuntimeError(
+                "circuitboard.blend introuvable a %r — le substrat retomberait "
+                "en silence sur l'aplat vert sans pistes, et le rendu serait "
+                "faux sans erreur." % CB_BLEND)
+        with bpy.data.libraries.load(CB_BLEND, link=False) as (src, dst):
+            if "CircuitBoard" not in src.node_groups:
+                raise RuntimeError(
+                    "node group 'CircuitBoard' absent de %r ; presents : %s"
+                    % (CB_BLEND, list(src.node_groups)))
+            dst.node_groups = ["CircuitBoard"]
+
+    m, nodes, links, bsdf = new_material(name)
+    out = nodes.get("Material Output")
+    if out is None:
+        raise RuntimeError("Material Output absent du materiau %r" % name)
+    nodes.remove(bsdf)
+
+    coord = nodes.new("ShaderNodeTexCoord")
+    grp = nodes.new("ShaderNodeGroup")
+    grp.node_tree = bpy.data.node_groups["CircuitBoard"]
+    grp.inputs["Scale"].default_value = CB_SCALE
+    grp.inputs["W"].default_value = CB_SEED
+    links.new(coord.outputs["Object"], grp.inputs["Vector"])
+    links.new(grp.outputs["BSDF"], out.inputs["Surface"])
+    links.new(grp.outputs["Displacement"], out.inputs["Displacement"])
+    m.displacement_method = "BUMP"
+    return m
+
+
+def m_pcb():
+    if USE_CB_PCB:
+        return mat("MAT_pcb", _pcb_circuitboard)
+    return mat("MAT_pcb", _pcb)
 # Meme correction : des puces a 0.02 lisent comme des trous noirs derriere
 # une paroi diffusante. Elles doivent se deviner, pas trancher.
 def m_chip():       return mat("MAT_chip", lambda n: _plastic(n, (0.10, 0.105, 0.10), 0.44))
@@ -945,7 +1069,31 @@ def m_btn_amber():  return mat("MAT_btn_amber", lambda n: _emit(n, FAMILY["amber
 def m_key_white():  return mat("MAT_key_white", lambda n: _plastic(n, (0.68, 0.69, 0.67), 0.32))
 def m_key_black():  return mat("MAT_key_black", lambda n: _plastic(n, (0.03, 0.033, 0.031), 0.30))
 def m_key_lit():    return mat("MAT_key_lit", lambda n: _emit(n, (0.20, 0.50, 0.88), 3.0))
-def m_ink():        return mat("MAT_ink", lambda n: _plastic(n, SPEC["text"], 0.44))
+# ENCRE DE RENDU, distincte de SPEC["text"] depuis le 2026-07-31.
+#
+# Rugosite d'abord portee de 0,44 a 0,82 : une serigraphie reelle est mate, et
+# le plancher de noir est passe de 0,357 a 0,25. Utile, mais ce n'etait pas la
+# cause principale, contrairement a ce que j'avais ecrit ici.
+#
+# La cause est l'ALBEDO, et le calcul le donne directement : srgb(42,40,37) vaut
+# 0,025 en lineaire ; sous un eclairement qui rend 0,79 sur un albedo de 0,60,
+# il ressort a 0,79 x 0,025 / 0,60 = 0,033 lineaire, soit ~0,20 en sRGB. C'est
+# a 0,003 pres ce qui etait mesure sur le libelle OCTAVE (0,197). Il n'y avait
+# donc plus rien a chercher du cote de l'eclairage.
+#
+# CINQ SUSPECTS ECARTES PAR LA MESURE avant d'en arriver la — ne pas les
+# rejouer : taille des area lights (-85 %), HDRI coupe, un seul rebond diffus,
+# lampe arriere eteinte, denoiser coupe (temoin de bruit haute frequence
+# 0,031 -> 0,048, donc bien coupe). Aucun ne deplace le plancher de plus de
+# 0,02.
+#
+# Pourquoi ne pas corriger SPEC["text"] : cette palette vient de
+# 06_visual_spec.md, qui decrit le DESSIN DE L'UI DANS JUCE, pas le rendu 3D.
+# Meme piege que celui deja signale plus haut sur le grain de la coque — une
+# contrainte de la couche 2D appliquee a la couche materiau. La palette reste
+# donc intacte pour ce a quoi elle sert.
+INK_RENDER = (0.0018, 0.0017, 0.0016)
+def m_ink():        return mat("MAT_ink", lambda n: _plastic(n, INK_RENDER, 0.82))
 def m_ink_light():  return mat("MAT_ink_light", lambda n: _plastic(n, (0.97, 0.96, 0.93), 0.36))
 def m_screen_text():return mat("MAT_screen_text", lambda n: _emit(n, OLED_CYAN, 42.0))
 
@@ -964,8 +1112,14 @@ def m_pad_body(name, lit):
         # Calibre CONTRE l'exposition, pas dans l'absolu.
         # « éléments actifs : lumiere interne plutot qu'un halo externe massif »
         # (06_visual_spec). 16 produisait un halo qui debordait sur les voisins.
+        # Glow RAMENE de 4,0 a 2,8 le 2026-07-31. Mesure par echantillon 24x24 au
+        # centre du pad « C » : le rendu sortait a (0,803 0,982 0,990) quand la
+        # maquette donne (0,721 0,892 0,955) — deux canaux sur trois a la limite
+        # du blanc. Le defaut n'etait PAS une desaturation (0,188 contre 0,245,
+        # ecart modeste) mais un ecretage : un pad allume qui crame perd sa
+        # teinte parce que ses canaux hauts se rejoignent sur 1,0.
         soft = tuple(0.42 + c * 0.46 for c in color)
-        return mat(key, lambda n: _silicone(n, soft, glow=4.0))
+        return mat(key, lambda n: _silicone(n, soft, glow=2.8))
     # Base = SPEC["control"], teintee par la famille. Les pads doivent lire
     # GRIS MOYEN comme sur la maquette, pas blanc : ils occupaient le haut de la
     # gamme et ecrasaient le premier quartile.
@@ -981,8 +1135,13 @@ def m_pad_body(name, lit):
     # pixels au-dessus de 0,85 (mesure par zone, 2026-07-30). Assombrir les pads
     # tassait l'image au milieu au lieu d'ouvrir les deux extremes — c'est ce
     # que le contraste local a -38,7 % mesurait.
-    pale = tuple(ctrl[i] * (0.94 + 0.30 * color[i]) for i in range(3))
-    return mat(key, lambda n: _silicone(n, pale, glow=0.0))
+    # NEUTRE depuis le 2026-07-31, teinte du corps RETIREE. Sur la maquette les
+    # 53 pads eteints sont tous du MEME blanc casse : c'est le filet, et lui
+    # seul, qui porte la famille. Teinter le corps rendait chaque cellule comme
+    # un aplat colore a plat, ou la maquette montre une touche blanche POSEE sur
+    # un fond colore — le relief disparaissait dans la couleur.
+    # `color` reste lu ci-dessus pour l'etat allume, qui garde sa teinte.
+    return mat(key, lambda n: _silicone(n, ctrl, glow=0.0))
 
 
 def m_pad_rim(name, lit):
@@ -1146,8 +1305,19 @@ def finalize_plaques():
 
 
 def centered_text(body, x0, y0, x1, y1, size_px, material, coll, z=None):
+    """Texte centre dans un rectangle, avec le MEME epaississement que la
+    serigraphie.
+
+    Le stroke manquait ici alors que printed_text l'a depuis toujours, et ça se
+    mesurait : dans la zone du bouton « Close », la maquette place 10,66 % de
+    ses pixels sous 0,50 de luminance, le rendu 3,60 % — le trait couvrait trois
+    fois moins de surface. Ce n'etait ni la couleur de l'encre ni l'eclairage,
+    deux pistes suivies avant celle-ci et mesurees a cote : c'etait la GRAISSE.
+    Un texte trop maigre s'anticrenele contre son fond clair et aucun pixel n'y
+    est de l'encre pure.
+    """
     return text(body, (x0 + x1) / 2.0, (y0 + y1) / 2.0, size_px, material, coll,
-                align="CENTER", z=z)
+                align="CENTER", z=z, stroke=p(size_px) * 0.024)
 
 
 # ===========================================================================
@@ -1292,7 +1462,12 @@ def oled(name, x0, y0, x1, y1, coll):
                  z_top=-p(D["oled"]), bevel=0.5)
 
 
-def button(name, x0, y0, x1, y1, label, state, coll, label_size=11):
+# CORPS PORTE de 11 a 16 px le 2026-07-31. Mesure sur la planche de detail x2 :
+# le mot « Close » occupe 40 px de large sur la maquette et n'en faisait que 26
+# au rendu, soit 65 % de la taille. Le stroke ajoute a centered_text a corrige
+# la graisse, pas la taille — ce sont deux defauts distincts et il fallait les
+# deux.
+def button(name, x0, y0, x1, y1, label, state, coll, label_size=16):
     ob = plate(name, x0, y0, x1, y1, D["button"], BTN_MAT[state](), coll,
                z_top=p(D["button"]), bevel=1.0)
     if label:
@@ -1806,13 +1981,16 @@ def build_pad_matrix():
             pad = plate("PAD_%d_%d" % (c, r), cx - pw / 2.0, y0,
                         cx + pw / 2.0, y0 + ph, D["pad"] + 0.55,
                         m_pad_body(family, is_lit), "PADS",
-                        # Chanfrein porte de 2,0 a 5,5 px. Les pads sont 64
-                        # objets sur un quart de l'image : ce sont eux qui
-                        # portent la densite de bords, mesuree 34 % sous la
-                        # maquette. Un chanfrein large capte le degrade de
-                        # lumiere sur toute sa hauteur et cree le galbe que
-                        # 02_relief_3d_system.md appelle « gradient de volume ».
-                        z_top=p(D["pad"]), bevel=5.5)
+                        # RAMENE de 5,5 a 2,2 px le 2026-07-31. Le 5,5 avait ete
+                        # pose pour remonter la « densite de bords », un
+                        # indicateur — et il la faisait BAISSER en pratique :
+                        # sur un pad de 46 px de large, 5,5 px de chanfrein de
+                        # chaque cote mangent un quart de la dalle et remplacent
+                        # l'arete franche par un degrade. La maquette montre un
+                        # dessus PLAT et large, chanfrein serre, ce que demande
+                        # aussi le CLAUDE.md du projet : « chanfreins nets, pas
+                        # d'arrondis complaisants ».
+                        z_top=p(D["pad"]), bevel=2.2)
             total += 1
             if is_lit:
                 centered_text(label, cx - pw / 2.0, y0, cx + pw / 2.0, y0 + ph,
@@ -2053,7 +2231,12 @@ def build_lighting():
     for name, loc, size, power, color in specs:
         data = bpy.data.lights.new("LIGHT_%s" % name, type="AREA")
         data.shape = "RECTANGLE"
-        data.size = size
+        # LIGHT_SCALE ne touche QUE la taille, jamais la puissance : en Cycles
+        # l'energie d'une Area est un flux TOTAL en watts, independant de sa
+        # surface. Retrecir une source garde donc l'exposition et ne change que
+        # la DURETE des ombres — c'est ce qui permet de balayer la douceur sans
+        # que l'exposition vienne polluer la comparaison.
+        data.size = size * LIGHT_SCALE
         data.size_y = size * 0.55
         data.energy = power
         data.color = color
@@ -2346,7 +2529,7 @@ def build(plastic_only=False):
 def parse_args(argv):
     args = {"render": False, "engine": "CYCLES", "samples": None,
             "percent": None, "save_blend": None, "plastic": False,
-            "exposure": None, "suffix": None}
+            "exposure": None, "suffix": None, "light_scale": None}
     if "--" not in argv:
         return args
     rest = argv[argv.index("--") + 1:]
@@ -2368,6 +2551,8 @@ def parse_args(argv):
             # fichier entre deux rendus — une edition entre deux rendus rend la
             # comparaison ininterpretable si autre chose bouge en meme temps.
             args["exposure"] = float(rest[i + 1]); i += 2
+        elif tok == "--light-scale":
+            args["light_scale"] = float(rest[i + 1]); i += 2
         elif tok == "--suffix":
             # Evite qu'une variante ecrase la precedente : renders/ est ignore
             # par git, un PNG ecrase est perdu.
@@ -2385,9 +2570,13 @@ def parse_args(argv):
 
 
 def main():
-    global EXPOSURE_EV
+    global EXPOSURE_EV, LIGHT_SCALE
     args = parse_args(sys.argv)
     log("Blender %s" % bpy.app.version_string)
+    if args["light_scale"] is not None:
+        LIGHT_SCALE = args["light_scale"]
+        log("taille des sources surchargee : x%.2f (puissance inchangee)"
+            % LIGHT_SCALE)
     if args["exposure"] is not None:
         EXPOSURE_EV = args["exposure"]
         log("exposition surchargee en ligne de commande : %+.2f EV" % EXPOSURE_EV)
