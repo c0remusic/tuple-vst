@@ -204,3 +204,95 @@ Profondeur optique = densité x épaisseur. À 40 sur 1,2 mm : 0,048, soit envir
 toujours fausse, parce que l'effet dépend d'un produit et pas de la densité
 seule. Ne pas compter sur le volume pour la laitance d'une face mince ; il
 comptera sur la tranche, où le trajet est plus long.
+
+---
+
+## Session 2026-07-30 (soir) — rendu façade, châssis translucide
+
+### Trois réglages MAJEURS étaient implicites, donc actifs sans être écrits
+
+Un réglage qu'un script ne pose pas n'est pas « neutre » : c'est le **défaut de
+l'outil qui s'applique**, et il pilote le rendu sans apparaître nulle part à la
+lecture du code. Trois cas dans le même fichier :
+
+- **`view_transform`** jamais posé → AgX (défaut Blender 4.0+), qui compresse
+  les hautes lumières et désature. Mesure : saturation −71,8 %, pixels > 0,85 à
+  0,04 % contre 3,50 % sur la référence. Pire, l'exposition avait été calibrée
+  « à la mesure » POUR compenser AgX, ce qui verrouillait le problème sous une
+  valeur qui avait l'air fondée.
+- **résolution** jamais posée → 1920x1080 au lieu des 1672x941 de la maquette,
+  ce qui interdisait toute comparaison zone par zone.
+- **`Transmission Weight` à 1.0** → coque en verre pur. À cette valeur un
+  Principled n'a plus de composante diffuse propre : la `Base Color` du châssis,
+  fixée par la spec, ne comptait **pour rien**.
+
+**Réflexe à garder** : devant un rendu qui résiste, lister ce que le script ne
+pose PAS avant de régler ce qu'il pose.
+
+### Piège de placement : `proto.CONFIG` s'applique APRÈS `build()`
+
+La résolution vit dans `tuple_vst_proto.py:119` et `configure_render()` l'écrit
+dans la scène après `build()`. La poser dans `build_camera()` ne sert à rien,
+elle est écrasée. Correctif au bon endroit :
+`proto.CONFIG["render"]["resolution"] = (1672, 941)` avant l'appel. Le fichier
+documentait déjà exactement ce piège, deux lignes plus haut, pour
+`output_prefix`.
+
+### Deux profondeurs pour une même carte
+
+`pcb_z` avait été porté à `depth * 0.21` pour rapprocher la PCB, mais la
+création du substrat gardait `depth * 0.68` **écrit en dur**. Mesure sur le
+`.blend` : substrat à −8,16 mm, condensateurs à −1,75 mm — 550 composants
+flottant à 6,4 mm devant leur propre carte. Invisible en rendu complet, évident
+en mode coque nue. Une cote utilisée à deux endroits doit avoir **une seule
+source**.
+
+### Le mode coque nue trouve ce que les métriques ne voient pas
+
+`-- --plastic` (155 objets contre 537) a révélé le bug de profondeur, l'aplat du
+diffuseur et l'absence de nervures — trois choses que l'histogramme global ne
+pouvait pas montrer. Le README le documentait comme indispensable ; il a été
+utilisé au bout de treize heures.
+
+### Pièges d'API Blender 5.2 vérifiés sur pièce
+
+- `bsdf.inputs.get("Subsurface IOR")` rend **None** alors que le socket existe
+  et que `socket.name` vaut exactement ça. Seul des six sockets Subsurface dans
+  ce cas. Contournement : parcourir `bsdf.inputs` et comparer `.name`.
+- **`Subsurface Scale` porte la DISTANCE**, `Subsurface Radius` n'est qu'une
+  pondération par canal (défauts Blender : radius (1.0, 0.2, 0.1), scale 0,005).
+  Mettre la distance dans Radius est un facteur 1000 d'écart.
+- `ShaderNodeMix` expose **quatre** sockets nommés `A` et quatre `B`, un par
+  type. Les adresser par nom prend silencieusement la variante VALUE — indexer
+  par position (Factor 0, A/B RGBA 6 et 7, Result RGBA sortie 2).
+- **Compositing refondu** : `scene.node_tree` supprimé au profit de
+  `scene.compositing_node_group` (un node group avec ses propres sockets),
+  `CompositorNodeMixRGB` supprimé au profit de `CompositorNodeMix`,
+  `CompositorNodeBlur.size_x` devenu un socket `Size`.
+- SSS **Random Walk** est donné pour idéal sur « thin and curved objects » mais
+  exige des maillages fermés : sur une coque percée de puits booléens il produit
+  des **rectangles noirs** sur les écrans. Christensen-Burley passe.
+
+### BlenderKit : téléchargement impossible en headless, extraction possible
+
+`download.start_download()` attend `model_location` et `model_rotation` en
+**kwargs** (pas dans le dict d'asset), même pour un matériau. Le Python de
+Blender reçoit un 403 sur l'API (User-Agent filtré) là où `curl` passe. Et le
+mode `--background` ne peut pas aboutir : le client est un processus externe et
+la boucle d'événements ne tourne pas.
+
+**Ce qui marche** : appliquer l'asset à la main dans l'instance GUI, puis
+l'extraire par MCP avec `bpy.data.libraries.write(path, {mat}, fake_user=True)`.
+Le `.blend` obtenu est autonome et rechargeable en headless.
+
+Licences BlenderKit : `royalty_free` autorise l'usage commercial et la vente des
+rendus, n'interdit que la revente de l'asset. Vérifier le champ `license` via
+l'API — sur 110 matériaux de circuit imprimé, **un seul** était `cc_zero`.
+
+### Un asset téléchargé réglé sur notre spec devient indiscernable du nôtre
+
+Le matériau « Procedural Translucent Plastic » appliqué brut rendait la coque
+brune et rayée. Réglé sur notre palette et nos valeurs mesurées, il donnait un
+**match nul** sur six indicateurs. Cause : à `Transmission Weight` 0,88 la
+surface n'a presque pas de composante diffuse pour porter ses rayures. Un asset
+n'apporte rien si on remplace tout ce qui fait sa personnalité.
