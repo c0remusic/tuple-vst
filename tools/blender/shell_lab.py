@@ -170,11 +170,37 @@ def cand_poli(m, nodes, links, bsdf):
     return "poli"
 
 
+def faire_gba(rmin, rmax, force=0.35):
+    """Fabrique un candidat GBA a laitance donnee.
+
+    La laitance de ce shader tient a UNE grandeur : la plage dans laquelle le
+    micro-grain remappe la rugosite. Plus la borne haute monte, plus la surface
+    disperse et moins on distingue ce qu'il y a derriere. La force du bump est
+    laissee fixe — la faire varier en meme temps rendrait le balayage
+    ininterpretable, puisque les deux agissent sur la meme apparence.
+    """
+    def candidat(m, nodes, links, bsdf):
+        cand_gba(m, nodes, links, bsdf)
+        for nd in nodes:
+            if nd.type == "MAP_RANGE":
+                nd.inputs[3].default_value = rmin
+                nd.inputs[4].default_value = rmax
+            elif nd.type == "BUMP":
+                nd.inputs["Strength"].default_value = force
+        return "gba"
+    return candidat
+
+
 CANDIDATS = {
     "gba": cand_gba,
     "nu": cand_nu,
     "sss": cand_sss,
     "poli": cand_poli,
+    # Balayage de laitance, du plus clair au plus depoli.
+    "g1": faire_gba(0.03, 0.10),
+    "g2": faire_gba(0.06, 0.18),
+    "g3": faire_gba(0.10, 0.28),
+    "g4": faire_gba(0.16, 0.40),
 }
 
 
@@ -298,7 +324,7 @@ def main():
     out = os.path.join(_HERE, "renders", "shell_lab")
     os.makedirs(out, exist_ok=True)
 
-    noms = [seul] if seul else list(CANDIDATS)
+    noms = seul.split(",") if seul else list(CANDIDATS)
     inconnus = [n for n in noms if n not in CANDIDATS]
     if inconnus:
         raise SystemExit("candidat inconnu : %s ; connus : %s"
