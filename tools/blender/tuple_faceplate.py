@@ -424,11 +424,47 @@ SHELL_VOLUME = False
 # la valeur que la mesure avait retenue.
 SHELL_SUBSURFACE = 0.30
 
-# Substrat de PCB par le node group procedural apporte par Antoine, plutot que
-# par l'aplat vert sans pistes de `_pcb()`. Bascule en une ligne, les deux
-# chemins restent vivants. Voir _pcb_circuitboard() pour la provenance et la
-# reserve de licence.
-USE_CB_PCB = True
+# Substrat de PCB : TROIS chemins, du plus recent au plus ancien. Le premier
+# actif gagne. Les trois restent vivants — chacun a coute une passe et sait
+# quelque chose que les autres ignorent.
+#
+#   "png"        cartes 4K generees par Tuple_3D/make_pcb_texture.py. RETENU
+#                le 2026-07-31 sur demande d'Antoine, qui n'etait pas convaincu
+#                par le procedural. Ni Poly Haven ni AmbientCG n'ont de texture
+#                de circuit imprime (verifie, temoin a l'appui), donc elle est
+#                generee et non telechargee : aucune licence a trancher.
+#   "nodegroup"  node group `CircuitBoard` apporte par Antoine. Marche, mais
+#                juge peu credible a l'oeil, et sa licence est inconnue.
+#   "procedural" aplat vert de _pcb(), sans pistes. Le plus ancien.
+PCB_MODE = "png"
+PCB_TEX = os.path.normpath(os.path.join(r"C:\dev\Tuple_3D", "05_textures"))
+
+# Composants de PCB en GEOMETRIE. Ils existaient parce que le substrat n'etait
+# qu'un aplat vert et qu'il fallait bien poser le detail quelque part. Depuis
+# que la carte est une image qui porte ses propres composants, sa serigraphie
+# et ses pastilles, ces 1165 objets ne font plus que la RECOUVRIR : la sonde
+# pcb_probe.py les montre comme des rectangles gris poses sur une carte
+# credible. Debranches APRES avoir verifie sur cette meme sonde que la carte
+# texturee se lit seule — remplaçant fonctionnel d'abord, retrait ensuite.
+#
+# Les condensateurs verticaux restent, eux : une texture est plate par nature
+# et ne peut pas produire une silhouette qui se detache.
+PCB_GEOMETRY = False
+
+# Volume des composants, pose sur les positions LUES dans la texture (et non
+# seme au hasard comme l'ancienne geometrie). Voir build_body().
+PCB_VOLUME = True
+
+# Rebord peripherique de la coque : largeur vue de face et epaisseur, en px de
+# maquette. Mesure sur la maquette : sa bande de bord dense fait environ 35 px.
+# LIP_WIDTH = 0 le desactive entierement.
+LIP_WIDTH = 34.0
+LIP_DEPTH = 26.0
+
+# Bornes basse et haute de la rugosite de la coque, apres remappage du bruit.
+# Surchargeable par -- --shell-rough <min> <max>.
+SHELL_ROUGH = (0.20, 0.30)
+
 CB_BLEND = os.path.normpath(os.path.join(r"C:\dev\Tuple_3D", "05_textures",
                                           "circuitboard.blend"))
 # Densite du routage. Les coordonnees sont en OBJET, donc en metres : a 1.0 un
@@ -638,8 +674,13 @@ def _shell(name):
     # reflet de lampe, qui forme un halo. A 0.04 le plastique devient du verre
     # optique et laisse voir la PCB comme sous une vitre ; a 0.40 les composants
     # internes s'effacent. 0.26 donne le boitier translucide attendu.
-    mr.inputs[3].default_value = 0.20      # To Min
-    mr.inputs[4].default_value = 0.30      # To Max
+    # BORNES pilotables par --shell-rough depuis le 2026-07-31, pour rejouer le
+    # balayage maintenant que la carte a quelque chose a montrer. Le verdict
+    # « polir la coque ne sert a rien, et ça brille beaucoup trop » avait ete
+    # rendu quand la PCB etait une quinzaine de rectangles gris : polir ne
+    # pouvait alors reveler que du vide.
+    mr.inputs[3].default_value = SHELL_ROUGH[0]      # To Min
+    mr.inputs[4].default_value = SHELL_ROUGH[1]      # To Max
     links.new(n_rough.outputs["Fac"], mr.inputs[0])
     links.new(coord.outputs["Object"], n_rough.inputs["Vector"])
 
@@ -1047,10 +1088,75 @@ def _pcb_circuitboard(name):
     return m
 
 
+def _pcb_png(name):
+    """Substrat par les trois cartes 4K generees hors de Blender.
+
+    Pourquoi une image plutot qu'un shader : ce qui fait lire « circuit » n'est
+    pas une statistique de bruit mais des RELATIONS — des pistes qui vont d'un
+    composant a un autre, des passifs groupes autour de la puce qu'ils
+    decouplent, de la serigraphie qui entoure un boitier. Un generateur 2D les
+    pose explicitement ; un node group ne peut que les imiter de loin. Et on
+    juge la texture en la regardant, sans relancer un rendu de 90 secondes.
+
+    Coordonnees GENERATED : elles valent 0-1 sur la boite englobante de l'objet,
+    donc la carte se plaque exactement une fois sur la PCB, quelle que soit sa
+    taille. Un depliage UV serait a refaire a chaque changement de cote.
+    """
+    chemins = {k: os.path.join(PCB_TEX, "pcb_%s.png" % k)
+               for k in ("color", "rough", "bump")}
+    manquants = [p_ for p_ in chemins.values() if not os.path.exists(p_)]
+    if manquants:
+        raise RuntimeError(
+            "cartes de PCB absentes : %s — les regenerer par "
+            "`python make_pcb_texture.py` depuis Tuple_3D. Sans elles le "
+            "substrat retomberait sur un aplat vert et le rendu serait faux "
+            "sans erreur." % ", ".join(manquants))
+
+    m, nodes, links, bsdf = new_material(name)
+    set_input(bsdf, "Metallic", 0.0)
+    coord = nodes.new("ShaderNodeTexCoord")
+
+    # RECADRAGE. La carte source est dessinee dans le repere de la MAQUETTE
+    # (1672 x 941 px, façade entiere), alors que BODY_pcb ne couvre que
+    # 0,965 x 0,955 de cette façade et que ses coordonnees Generated valent 0-1
+    # sur ELLE. Sans ce remappage la carte serait etiree de 3,5 % et ses
+    # reperes — matrice de pads, encodeurs, nappes d'ecran — ne tomberaient plus
+    # sous les commandes correspondantes.
+    fx, fy = 0.965, 0.955
+    mapping = nodes.new("ShaderNodeMapping")
+    mapping.inputs["Scale"].default_value = (fx, fy, 1.0)
+    mapping.inputs["Location"].default_value = ((1.0 - fx) / 2.0,
+                                                (1.0 - fy) / 2.0, 0.0)
+    links.new(coord.outputs["Generated"], mapping.inputs["Vector"])
+
+    def carte(cle, colorspace):
+        t = nodes.new("ShaderNodeTexImage")
+        t.image = bpy.data.images.load(chemins[cle], check_existing=True)
+        t.image.colorspace_settings.name = colorspace
+        t.extension = "EXTEND"
+        links.new(mapping.outputs["Vector"], t.inputs["Vector"])
+        return t
+
+    links.new(carte("color", "sRGB").outputs["Color"], bsdf.inputs["Base Color"])
+    links.new(carte("rough", "Non-Color").outputs["Color"], bsdf.inputs["Roughness"])
+    bump = nodes.new("ShaderNodeBump")
+    # Faible : le relief reel des composants est porte par la geometrie posee
+    # par-dessus. Ce bump-ci ne sert qu'aux pistes et aux pastilles, qui sont
+    # trop fines pour valoir un objet chacune.
+    bump.inputs["Strength"].default_value = 0.12
+    links.new(carte("bump", "Non-Color").outputs["Color"], bump.inputs["Height"])
+    links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+    return m
+
+
 def m_pcb():
-    if USE_CB_PCB:
+    if PCB_MODE == "png":
+        return mat("MAT_pcb", _pcb_png)
+    if PCB_MODE == "nodegroup":
         return mat("MAT_pcb", _pcb_circuitboard)
-    return mat("MAT_pcb", _pcb)
+    if PCB_MODE == "procedural":
+        return mat("MAT_pcb", _pcb)
+    raise RuntimeError("PCB_MODE inconnu : %r" % PCB_MODE)
 # Meme correction : des puces a 0.02 lisent comme des trous noirs derriere
 # une paroi diffusante. Elles doivent se deviner, pas trancher.
 def m_chip():       return mat("MAT_chip", lambda n: _plastic(n, (0.10, 0.105, 0.10), 0.44))
@@ -1531,6 +1637,50 @@ def build_body():
     wn = body.modifiers.new("weighted_normals", "WEIGHTED_NORMAL")
     wn.keep_sharp = True
 
+    # REBORD PERIPHERIQUE — « on n'a pas le cote epaisseur du plastique »
+    # (Antoine, 2026-07-31). Le detail x3 du coin montre pourquoi : la maquette
+    # a DEUX aretes concentriques, le bord arrondi exterieur puis le retour
+    # interieur du couvercle, separees par une bande de matiere dense d'environ
+    # 7 mm. Le rendu n'en avait qu'une, et un bord unique lit comme une feuille
+    # decoupee quelle que soit la matiere qu'on lui donne.
+    #
+    # Aucun reglage de shader ne produit une arete : c'est de la geometrie. Le
+    # rebord est un CADRE plein dans la matiere de la coque, pose sur le
+    # pourtour de la face avant. Il epaissit optiquement le bord — le trajet a
+    # travers lui est bien plus long qu'a travers la paroi — et sa limite
+    # interieure fournit la seconde arete.
+    #
+    # Non retenu a la place : epaissir WALL. Essaye a 14 et 20 px. A 20 px
+    # (4 mm) les puits de 0,8 mm ne percent plus la paroi et un triangle noir
+    # apparait sur l'ecran KEY. La paroi ne peut pas depasser la profondeur du
+    # puits le moins profond, ce qui plafonne le procede bien avant l'effet
+    # recherche.
+    if LIP_WIDTH > 0.0:
+        lip_out = create_box("BODY_lip_out", (w, h, p(LIP_DEPTH)),
+                             location=(cx, cy, FACE_Z - p(LIP_DEPTH) / 2.0),
+                             collection="BODY")
+        lip_in = create_box("CUT_lip", (w - p(LIP_WIDTH) * 2.0,
+                                        h - p(LIP_WIDTH) * 2.0,
+                                        p(LIP_DEPTH) * 3.0),
+                            location=(cx, cy, FACE_Z - p(LIP_DEPTH) / 2.0),
+                            # SURTOUT PAS dans "CUTTERS" : le booleen du corps
+                            # principal consomme cette collection EN ENTIER
+                            # (operand_type = COLLECTION), donc ce cutter-ci y
+                            # percait aussi la façade. Constate au rendu — un
+                            # trou beant au centre laissait voir la carte a nu,
+                            # ce qui ressemblait a une coque devenue
+                            # transparente et non a un defaut de geometrie.
+                            collection="BODY")
+        lip_in.hide_render = True
+        b2 = lip_out.modifiers.new("evide", "BOOLEAN")
+        b2.operation = "DIFFERENCE"
+        b2.object = lip_in
+        b2.solver = "EXACT"
+        add_bevel(lip_out, p(1.6), segments=4, angle_deg=40.0)
+        assign(lip_out, m_shell())
+        log("rebord peripherique : %.1f px de large, %.1f px d'epaisseur"
+            % (LIP_WIDTH, LIP_DEPTH))
+
     # PROFONDEUR DE LA CARTE — une seule source, utilisee par le substrat ET
     # par tout ce qui est pose dessus.
     # Bug corrige le 2026-07-30 : ces deux profondeurs avaient DIVERGE. La
@@ -1545,6 +1695,89 @@ def build_body():
     pcb = create_box("BODY_pcb", (w * 0.965, h * 0.955, p(1.6)),
                      location=(cx, cy, pcb_z), collection="BODY")
     assign(pcb, m_pcb())
+
+    # COMPOSANTS EN GEOMETRIE — desormais conditionnels.
+    #
+    # Ils existaient parce que le substrat n'etait qu'un aplat vert : il fallait
+    # bien poser le detail quelque part. Depuis que PCB_MODE vaut "photo", la
+    # carte PORTE ses composants, sa serigraphie et ses pastilles, et ces 1165
+    # objets ne font plus que la RECOUVRIR — la sonde pcb_probe.py les montre
+    # comme des rectangles gris poses sur une carte credible.
+    #
+    # Remplacant fonctionnel verifie AVANT de debrancher, pas apres : la sonde
+    # rend la carte texturee seule et elle est lisible. C'est la condition pour
+    # retirer quoi que ce soit.
+    #
+    # Les condensateurs verticaux font exception plus bas : une texture est
+    # plate par nature et ne peut pas produire de composant qui se detache en
+    # silhouette.
+    # ----- VOLUME ALIGNE SUR LA TEXTURE ---------------------------------
+    # Antoine, sur la carte reduite a une image plaquee : « on dirait un tableau
+    # d'une pcb basse definition ». Il avait raison : en posant la texture
+    # j'avais debranche TOUT le volume, et une carte sans un objet qui depasse
+    # est un plan peint.
+    #
+    # L'erreur d'avant etait l'inverse et aussi mauvaise : 1165 boites semees au
+    # hasard, qui ne tombaient sur rien et recouvraient la carte. Ici chaque
+    # boite vient de `pcb_components.json`, produit par Tuple_3D/pcb_components.py
+    # qui LIT la texture et rend la position mesuree de chaque composant qu'elle
+    # dessine. Le volume tombe donc exactement sur le dessin.
+    if PCB_VOLUME:
+        import json as _json
+        chemin_cpn = os.path.join(PCB_TEX, "pcb_components.json")
+        if not os.path.exists(chemin_cpn):
+            raise RuntimeError(
+                "liste de composants absente : %s — la regenerer par "
+                "`python pcb_components.py 05_textures/pcb_photo.png "
+                "--seuil 0.26` depuis Tuple_3D. Sans elle la carte redeviendrait "
+                "un plan peint, ce qui est exactement le defaut signale."
+                % chemin_cpn)
+        with open(chemin_cpn, encoding="utf-8") as _f:
+            _data = _json.load(_f)
+        tw, th = _data["texture"]
+        # Un materiau par COULEUR mesuree, arrondie au centieme : la carte porte
+        # 96 composants mais bien moins de teintes distinctes, et creer un
+        # materiau par objet gonflerait la scene pour rien.
+        _cache_mat = {}
+
+        def _mat_cpn(rgb):
+            cle = tuple(round(v, 2) for v in rgb)
+            if cle not in _cache_mat:
+                # `srgb()` prend des valeurs 0-255 ; la couleur mesuree est en
+                # 0-1, d'ou la remise a l'echelle. Sans conversion, injecter du
+                # sRGB dans une Base Color lineaire eclaircit d'environ 30 % —
+                # le meme piege que la palette de la spec, deja documente sur
+                # cette fonction.
+                lin = srgb(*[v * 255.0 for v in cle])
+                _cache_mat[cle] = mat(
+                    "MAT_cpn_%02d%02d%02d" % tuple(int(v * 99) for v in cle),
+                    lambda n, c=lin: _plastic(n, c, 0.46))
+            return _cache_mat[cle]
+
+        poses = 0
+        for c in _data["composants"]:
+            cx_px = (c["x"] + c["w"] / 2.0) * tw
+            cy_px = (c["y"] + c["h"] / 2.0) * th
+            wx, wy = px_to_world(cx_px, cy_px)
+            haut = c["haut_mm"] / 1000.0
+            ob = create_box("PCBV_%03d" % poses,
+                            (c["w"] * tw * PX, c["h"] * th * PX, haut),
+                            location=(wx, wy, pcb_z + p(0.8) + haut / 2.0),
+                            collection="BODY")
+            assign(ob, _mat_cpn(c["couleur"]))
+            poses += 1
+        if poses != len(_data["composants"]):
+            raise RuntimeError("%d composants poses pour %d listes"
+                               % (poses, len(_data["composants"])))
+        log("volume de carte : %d composants poses sur les positions LUES dans "
+            "la texture, %d teintes distinctes" % (poses, len(_cache_mat)))
+
+    # `n()` ramene a zero tous les effectifs de composants quand la carte les
+    # porte deja. Les boucles restent en place, intactes et relisibles ; c'est
+    # leur cardinalite qui tombe. Un `if` autour de chacune aurait reindente
+    # 150 lignes pour le meme effet.
+    def n(k):
+        return k if PCB_GEOMETRY else 0
 
     # Pistes de cuivre : le brief demande « copper, solder mask and distinct
     # components », pas un rectangle vert uni.
@@ -1561,7 +1794,7 @@ def build_body():
     # ne se gagne pas en polissant la coque ni en la rendant plus transparente —
     # deux pistes deja essayees et mesurees sans effet — mais en reduisant
     # l'epaisseur de matiere diffusante traversee.
-    for i in range(34):
+    for i in range(n(34)):
         horizontal = rng.random() < 0.55
         length = rng.uniform(60, 320) * PX
         tx = rng.uniform(x0 + 70, x1 - 70)
@@ -1575,7 +1808,7 @@ def build_body():
         traces += 1
 
     solder = m_solder()
-    for i in range(60):
+    for i in range(n(60)):
         px_ = rng.uniform(x0 + 60, x1 - 60)
         py_ = rng.uniform(y0 + 40, y1 - 40)
         wx, wy = px_to_world(px_, py_)
@@ -1585,7 +1818,7 @@ def build_body():
 
     chip_mat = m_chip()
     chips = 0
-    for i in range(46):
+    for i in range(n(46)):
         cw = rng.uniform(14, 62) * PX
         cd = rng.uniform(10, 30) * PX
         ch = rng.uniform(2.5, 5.0) * PX
@@ -1614,7 +1847,7 @@ def build_body():
     # Tout est seme par le meme rng deterministe : le rendu reste reproductible
     # d'une execution a l'autre, sinon aucune mesure ne serait comparable.
     passifs = 0
-    for i in range(340):
+    for i in range(n(340)):
         # Boitiers CMS courants, en pixels de maquette : 0402 a 1206.
         pw_ = rng.choice((5.0, 7.0, 9.0, 13.0)) * PX
         pd_ = pw_ * rng.uniform(0.45, 0.62)
@@ -1654,7 +1887,7 @@ def build_body():
 
     # Vias : trous metallises. Minuscules et nombreux — c'est leur DENSITE qui
     # se lit a travers le depoli, pas leur forme.
-    for i in range(150):
+    for i in range(n(150)):
         px_ = rng.uniform(x0 + 40, x1 - 40)
         py_ = rng.uniform(y0 + 26, y1 - 26)
         wx, wy = px_to_world(px_, py_)
@@ -1668,7 +1901,7 @@ def build_body():
     # contraste ordre/desordre qui fait lire « carte electronique » plutot que
     # « bruit ».
     pins = 0
-    for j in range(5):
+    for j in range(n(5)):
         n_pin = rng.choice((6, 8, 10, 14))
         bx_ = rng.uniform(x0 + 90, x1 - 220)
         by_ = rng.uniform(y0 + 36, y0 + 128)
@@ -1685,7 +1918,7 @@ def build_body():
 
     # Blindages metalliques : grandes surfaces claires qui structurent la carte
     # et cassent le vert uniforme.
-    for i in range(3):
+    for i in range(n(3)):
         sw = rng.uniform(90, 190) * PX
         sd = rng.uniform(50, 90) * PX
         px_ = rng.uniform(x0 + 120, x1 - 120)
@@ -2533,7 +2766,8 @@ def build(plastic_only=False):
 def parse_args(argv):
     args = {"render": False, "engine": "CYCLES", "samples": None,
             "percent": None, "save_blend": None, "plastic": False,
-            "exposure": None, "suffix": None, "light_scale": None}
+            "exposure": None, "suffix": None, "light_scale": None,
+            "shell_rough": None}
     if "--" not in argv:
         return args
     rest = argv[argv.index("--") + 1:]
@@ -2555,6 +2789,8 @@ def parse_args(argv):
             # fichier entre deux rendus — une edition entre deux rendus rend la
             # comparaison ininterpretable si autre chose bouge en meme temps.
             args["exposure"] = float(rest[i + 1]); i += 2
+        elif tok == "--shell-rough":
+            args["shell_rough"] = (float(rest[i + 1]), float(rest[i + 2])); i += 3
         elif tok == "--light-scale":
             args["light_scale"] = float(rest[i + 1]); i += 2
         elif tok == "--suffix":
@@ -2574,9 +2810,12 @@ def parse_args(argv):
 
 
 def main():
-    global EXPOSURE_EV, LIGHT_SCALE
+    global EXPOSURE_EV, LIGHT_SCALE, SHELL_ROUGH
     args = parse_args(sys.argv)
     log("Blender %s" % bpy.app.version_string)
+    if args["shell_rough"] is not None:
+        SHELL_ROUGH = args["shell_rough"]
+        log("rugosite de coque surchargee : %.3f .. %.3f" % SHELL_ROUGH)
     if args["light_scale"] is not None:
         LIGHT_SCALE = args["light_scale"]
         log("taille des sources surchargee : x%.2f (puissance inchangee)"
