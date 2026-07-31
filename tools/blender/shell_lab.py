@@ -192,8 +192,54 @@ def faire_gba(rmin, rmax, force=0.35):
     return candidat
 
 
+def faire_plastique(transm, sss_w, sss_mm, rough, force=0.30):
+    """Polycarbonate LAITEUX : transmission partielle PLUS diffusion interne.
+
+    Antoine, sur le candidat gba : « on dirait un melange de metal et de verre,
+    mais du plastique ». Le diagnostic est exact et il tient a une seule ligne du
+    shader : a transmission 1,00 le Principled n'a plus AUCUNE composante
+    diffuse, il ne renvoie que du speculaire — et une surface qui ne renvoie que
+    du speculaire lit comme du verre ou du metal poli, quelle que soit sa
+    rugosite.
+
+    Un polycarbonate translucide n'est pas du verre rugueux : c'est un milieu
+    diffusant. La lumiere y ENTRE, s'y disperse sur quelques dixiemes de
+    millimetre et ressort ailleurs. C'est un BSSRDF.
+
+    `sss_mm` est le rayon de diffusion EN MILLIMETRES. Il doit rester du meme
+    ordre que la paroi (1,2 mm) : le premier candidat sss le posait a 4 mm, soit
+    plus de trois fois l'epaisseur traversee, et la coque sortait blanche et
+    opaque. C'est ce reglage qui l'avait fait ecarter, pas le principe.
+    """
+    def candidat(m, nodes, links, bsdf):
+        cand_gba(m, nodes, links, bsdf)          # reprend le micro-grain
+        fp.set_input(bsdf, ["Transmission Weight", "Transmission"], transm)
+        bsdf.subsurface_method = "BURLEY"
+        fp.set_input(bsdf, ["Subsurface Weight", "Subsurface"], sss_w)
+        fp.set_input(bsdf, "Subsurface Radius", (1.0, 0.94, 0.90))
+        fp.set_input(bsdf, "Subsurface Scale", sss_mm / 1000.0)
+        for nd in nodes:
+            if nd.type == "MAP_RANGE":
+                nd.inputs[3].default_value = rough[0]
+                nd.inputs[4].default_value = rough[1]
+            elif nd.type == "BUMP":
+                nd.inputs["Strength"].default_value = force
+        return "plastique"
+    return candidat
+
+
 CANDIDATS = {
     "gba": cand_gba,
+    # Melanges transmission / diffusion interne, du plus vitreux au plus laiteux.
+    # VALEURS BAISSEES apres un premier balayage a 0,18-0,62 de diffusion, ou
+    # les quatre candidats sortaient blancs des le second. Le subsurface de
+    # Blender sature tres vite quand son rayon approche l'epaisseur traversee :
+    # sur 1,2 mm de paroi, un rayon de 0,6 mm noie deja tout. Le dosage utile se
+    # joue en DIXIEMES de millimetre.
+    "p1": faire_plastique(0.94, 0.05, 0.15, (0.06, 0.18)),
+    "p2": faire_plastique(0.90, 0.09, 0.25, (0.06, 0.18)),
+    "p3": faire_plastique(0.86, 0.14, 0.35, (0.08, 0.20)),
+    "p4": faire_plastique(0.80, 0.20, 0.45, (0.08, 0.20)),
     "nu": cand_nu,
     "sss": cand_sss,
     "poli": cand_poli,
@@ -205,7 +251,15 @@ CANDIDATS = {
 }
 
 
-def batir_scene(nom_mat, remplir):
+def batir_scene(nom_mat, remplir, gap=None):
+    """`gap` : distance entre la face INTERIEURE de la paroi et la carte.
+
+    C'est le levier dominant du flou, et il l'emporte sur la rugosite. Une
+    surface depolie ne floute pas ce qu'elle touche : elle floute en proportion
+    de la distance qui l'en separe — un verre depoli pose sur un texte le laisse
+    lire, a cinq millimetres il l'efface. Regler la rugosite sans regler cette
+    distance revient a corriger un symptome.
+    """
     vider()
     scene = bpy.context.scene
 
@@ -224,7 +278,8 @@ def batir_scene(nom_mat, remplir):
     bpy.ops.mesh.primitive_plane_add(size=1.0,
                                      location=(0.0, 0.0,
                                                PLAQUE_D / 2.0 - WALL_EP
-                                               - PCB_GAP))
+                                               - (PCB_GAP if gap is None
+                                                  else gap)))
     pcb = bpy.context.active_object
     pcb.name = "PCB"
     pcb.scale = (PLAQUE_W * 0.96, PLAQUE_H * 0.96, 1.0)
@@ -300,8 +355,13 @@ def batir_scene(nom_mat, remplir):
             # Puissances DIVISEES : a 60 et 22 W le banc sortait blanc sature
             # sur les quatre candidats, et une image ecretee ne distingue plus
             # rien — deux matieres tres differentes y rendent le meme blanc.
-            ("KEY", (-0.30, 0.26, 0.62), 0.34, 14.0),
-            ("FILL", (0.34, 0.08, 0.52), 0.42, 5.0)):
+            # DIVISEES PAR TROIS. A 14 et 5 W, 28 a 52 % des pixels sortaient
+            # ecretes a 1,0 selon le candidat — un banc dont la moitie de
+            # l'image est saturee ne departage plus rien, puisque deux matieres
+            # tres differentes y rendent le meme blanc. Le garde en fin de
+            # rendu verifie desormais que ça ne revient pas.
+            ("KEY", (-0.30, 0.26, 0.62), 0.34, 4.5),
+            ("FILL", (0.34, 0.08, 0.52), 0.42, 1.6)):
         d = bpy.data.lights.new("L_" + nom, type="AREA")
         d.shape = "RECTANGLE"
         d.size, d.size_y, d.energy = taille, taille * 0.55, watts
@@ -343,12 +403,53 @@ def batir_scene(nom_mat, remplir):
     return scene
 
 
+SEUIL_ECRETAGE = 0.08
+
+
+def _garde_ecretage(chemin, etiquette):
+    """Refuse une image dont trop de pixels touchent le blanc.
+
+    Un banc de comparaison n'a de valeur que s'il rapporte des DIFFERENCES.
+    Au-dela de quelques pour cent d'ecretage, les candidats les plus clairs se
+    rejoignent tous sur 1,0 et la planche fait croire qu'ils se ressemblent
+    alors que c'est le capteur qui est sature. Vecu ici a 28 puis 52 %.
+    """
+    # Lecture par bpy, PAS par PIL : le Python embarque de Blender porte numpy
+    # mais pas Pillow, et le premier jet de ce garde s'est desactive tout seul
+    # sur un ImportError — un garde qui se tait quand il ne peut pas mesurer ne
+    # garde rien du tout.
+    import numpy as np
+    img = bpy.data.images.load(chemin, check_existing=False)
+    try:
+        buf = np.empty(len(img.pixels), dtype=np.float32)
+        img.pixels.foreach_get(buf)
+    finally:
+        bpy.data.images.remove(img)
+    rgba = buf.reshape(-1, 4)
+    # Les pixels de bpy sont LINEAIRES ; le seuil vise l'image affichee, donc
+    # on repasse en sRGB avant de comparer.
+    lin = 0.2126 * rgba[:, 0] + 0.7152 * rgba[:, 1] + 0.0722 * rgba[:, 2]
+    lum = np.where(lin <= 0.0031308, lin * 12.92,
+                   1.055 * np.power(np.clip(lin, 1e-8, None), 1 / 2.4) - 0.055)
+    part = float((lum > 0.98).mean())
+    if part > SEUIL_ECRETAGE:
+        log("!! %s : %.1f %% de pixels ecretes (seuil %.0f %%) — baisser les "
+            "sources, cette image ne peut rien departager"
+            % (etiquette, 100 * part, 100 * SEUIL_ECRETAGE))
+    else:
+        log("   %s : %.1f %% d'ecretage, mediane %.3f"
+            % (etiquette, 100 * part, float(np.median(lum))))
+
+
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     cycles = "--cycles" in argv
     seul = None
     if "--only" in argv:
         seul = argv[argv.index("--only") + 1]
+    gaps = None
+    if "--gap" in argv:
+        gaps = [float(v) / 1000.0 for v in argv[argv.index("--gap") + 1].split(",")]
 
     out = os.path.join(_HERE, "renders", "shell_lab")
     os.makedirs(out, exist_ok=True)
@@ -359,8 +460,10 @@ def main():
         raise SystemExit("candidat inconnu : %s ; connus : %s"
                          % (inconnus, list(CANDIDATS)))
 
-    for nom in noms:
-        scene = batir_scene("MAT_lab_" + nom, CANDIDATS[nom])
+    paires = ([(n, g) for n in noms for g in gaps] if gaps
+              else [(n, None) for n in noms])
+    for nom, gap in paires:
+        scene = batir_scene("MAT_lab_" + nom, CANDIDATS[nom], gap=gap)
         scene.render.resolution_x = 900
         scene.render.resolution_y = 560
         scene.render.resolution_percentage = 100
@@ -381,10 +484,12 @@ def main():
         scene.render.engine = "CYCLES"
         scene.cycles.samples = 64 if not cycles else 256
         proto.pick_gpu()
-        scene.render.filepath = os.path.join(out, "lab_%s" % nom)
+        etiquette = nom if gap is None else "%s_g%03d" % (nom, round(gap * 1000 * 10))
+        scene.render.filepath = os.path.join(out, "lab_%s" % etiquette)
         bpy.ops.render.render(write_still=True)
         ecrit = scene.render.filepath + ".png"
-        log("%-6s -> %s (existe=%s)" % (nom, ecrit, os.path.exists(ecrit)))
+        log("%-10s -> %s (existe=%s)" % (etiquette, ecrit, os.path.exists(ecrit)))
+        _garde_ecretage(ecrit, etiquette)
 
 
 if __name__ == "__main__":
