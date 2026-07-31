@@ -46,6 +46,7 @@ PLAQUE_D = 0.012          # 12 mm d'epaisseur de boitier
 PCB_GAP = 0.0025          # 2,5 mm entre la face arriere de la plaque et la carte
 LIP_W = 0.0068            # 34 px de maquette
 LIP_D = 0.0052            # 26 px
+WALL_EP = 0.0012          # 1,2 mm de paroi, comme WALL dans tuple_faceplate
 
 
 def log(m):
@@ -209,9 +210,21 @@ def batir_scene(nom_mat, remplir):
     scene = bpy.context.scene
 
     # -- la carte, a la vraie distance ------------------------------------
+    # LA CARTE EST DEDANS, pas derriere. Elle etait placee sous la face ARRIERE
+    # du boitier, si bien que chaque rayon traversait la paroi avant, l'air,
+    # PUIS la paroi arriere — deux lames au lieu d'une, et le decalage lateral
+    # de la seconde deformait franchement l'image. Le temoin `poli` le montrait
+    # en clair : la carte y sortait decalee vers la gauche avec une bande blanche
+    # a droite.
+    #
+    # Dans un boitier reel la carte est a quelques millimetres SOUS la paroi
+    # avant, du cote interieur. Le rayon ne traverse alors qu'une lame de
+    # 1,2 mm, et une lame mince a faces paralleles ne deforme quasiment rien —
+    # ce qu'Antoine a signale d'emblee : « le plastique ne fait pas ça ».
     bpy.ops.mesh.primitive_plane_add(size=1.0,
                                      location=(0.0, 0.0,
-                                               -PLAQUE_D / 2.0 - PCB_GAP))
+                                               PLAQUE_D / 2.0 - WALL_EP
+                                               - PCB_GAP))
     pcb = bpy.context.active_object
     pcb.name = "PCB"
     pcb.scale = (PLAQUE_W * 0.96, PLAQUE_H * 0.96, 1.0)
@@ -237,6 +250,22 @@ def batir_scene(nom_mat, remplir):
 
     # -- la plaque, avec son rebord ---------------------------------------
     plaque = boite("PLAQUE", (PLAQUE_W, PLAQUE_H, PLAQUE_D), (0.0, 0.0, 0.0))
+    # CREUSE, pas pleine. Le premier jet donnait un bloc massif de 12 mm, et
+    # Antoine l'a vu tout de suite : « pourquoi ça deforme autant la PCB
+    # derriere ? Le plastique ne fait pas ça ». Il a raison — 12 mm de matiere a
+    # IOR 1,585 decalent l'image d'environ 1,5 mm des qu'on regarde en biais, et
+    # le chanfrein du pourtour agit en lentille. Un boitier reel n'est pas un
+    # bloc : c'est une paroi de 1,2 mm avec de l'air derriere, et une lame mince
+    # a faces paralleles ne deforme quasiment rien.
+    #
+    # La façade, elle, portait deja ce Solidify. Le banc etait donc MOINS juste
+    # que la scene qu'il devait servir a regler — et il aurait fait choisir une
+    # matiere sur une deformation qui n'existe pas.
+    sol = plaque.modifiers.new("hollow", "SOLIDIFY")
+    sol.thickness = WALL_EP
+    sol.offset = -1.0
+    sol.use_even_offset = True
+    sol.use_rim = True
     bevel(plaque, 0.0026, segments=5)
 
     lip = boite("LIP", (PLAQUE_W, PLAQUE_H, LIP_D),
