@@ -228,8 +228,113 @@ def faire_plastique(transm, sss_w, sss_mm, rough, force=0.30):
     return candidat
 
 
+def cand_reddit(m, nodes, links, bsdf):
+    """La recette la plus soutenue du fil r/blenderhelp, transposee.
+
+    Subsurface a 0,30 avec un rayon NEUTRE sur les trois canaux — la reponse la
+    plus votee le dit explicitement, et notre reglage teintait le rayon
+    (1,0 / 0,94 / 0,90) sans que rien ne le justifie. Transmission volontairement
+    MODEREE : « don't set transmission too high or it will kill all the
+    subsurface », ce que la mesure d'hier avait montre sans que j'en tire la
+    conclusion. Et du Coat, que plusieurs intervenants donnent comme ce qui fait
+    la difference entre du verre et du plastique.
+    """
+    cand_gba(m, nodes, links, bsdf)
+    fp.set_input(bsdf, ["Transmission Weight", "Transmission"], 0.55)
+    bsdf.subsurface_method = "BURLEY"
+    fp.set_input(bsdf, ["Subsurface Weight", "Subsurface"], 0.30)
+    fp.set_input(bsdf, "Subsurface Radius", (1.0, 1.0, 1.0))
+    # RAYON DIX FOIS PLUS COURT que le premier essai. La recette du fil precise
+    # « make the surface really thin » ; notre paroi fait 1,2 mm, et un rayon de
+    # 0,6 mm y noie tout — le rendu sortait en aplat blanc. Le dosage utile se
+    # joue en centiemes de millimetre a cette epaisseur.
+    fp.set_input(bsdf, "Subsurface Scale", SSS_MM / 1000.0)
+    fp.set_input(bsdf, ["Coat Weight", "Clearcoat"], 0.35)
+    fp.set_input(bsdf, ["Coat Roughness", "Clearcoat Roughness"], 0.08)
+    for nd in nodes:
+        if nd.type == "MAP_RANGE":
+            nd.inputs[3].default_value = 0.08
+            nd.inputs[4].default_value = 0.22
+    return "reddit"
+
+
+def cand_blenderkit(m, nodes, links, bsdf):
+    """« Procedural Translucent Plastic » de BlenderKit, royalty free.
+
+    asset_base_id 6abfb12e-a102-47ac-8a4f-5859debd5801, verifie dans le fichier
+    et non de memoire. Il etait DEJA telecharge, extrait et cable dans le projet
+    sous USE_BK_PLASTIC — et debranche.
+
+    CROYANCE REVISEE. Le motif ecrit pour l'ecarter etait : « ne peut pas
+    exprimer ses rayures a Transmission Weight 0,88, faute de composante diffuse
+    pour les porter ». C'est exact, et c'est exactement ce qu'un fil
+    r/blenderhelp sur ce meme probleme resume par « don't set transmission too
+    high or it will kill all the subsurface ». Le verdict portait donc sur un
+    REGLAGE, pas sur le materiau — et ce reglage a change. On le rejuge a
+    transmission moderee.
+    """
+    chemin = os.path.normpath(os.path.join(
+        r"C:\dev\Tuple_3D", "05_textures", "blenderkit_translucent_plastic.blend"))
+    nom = "Procedural Translucent Plastic"
+    if nom not in bpy.data.materials:
+        if not os.path.exists(chemin):
+            raise RuntimeError("materiau BlenderKit absent : %s" % chemin)
+        with bpy.data.libraries.load(chemin, link=False) as (src, dst):
+            if nom not in src.materials:
+                raise RuntimeError("materiau %r absent de %s ; presents : %s"
+                                   % (nom, chemin, list(src.materials)))
+            dst.materials = [nom]
+    # COPIE de l'asset, jamais l'asset lui-meme : le banc corrige sa
+    # transmission, et l'original doit rester intact pour rejouer la comparaison.
+    copie = bpy.data.materials[nom].copy()
+    copie.name = "MAT_lab_bk"
+    # Sa structure n'est PAS un Principled expose : c'est un node group
+    # « Procedural Plastic » a 10 entrees. Le garde precedent cherchait un
+    # Principled et a bien bloque plutot que de laisser passer un reglage
+    # applique nulle part.
+    grp = next((n for n in copie.node_tree.nodes if n.type == "GROUP"), None)
+    if grp is None:
+        raise RuntimeError(
+            "pas de node group dans %r — structure inattendue, le reglage de "
+            "transmission ne s'appliquerait nulle part et le candidat serait "
+            "juge sur ses valeurs d'origine sans que rien ne le signale." % nom)
+    attendus = ("Transmission Weight", "Roughness")
+    manquants = [k for k in attendus if k not in grp.inputs]
+    if manquants:
+        raise RuntimeError(
+            "entrees %s absentes du groupe %r ; presentes : %s"
+            % (manquants, grp.node_tree.name, [i.name for i in grp.inputs]))
+    # L'asset est livre a Transmission Weight 1,0 — le reglage meme qui supprime
+    # toute composante diffuse, et donc la raison pour laquelle il avait ete
+    # juge « indiscernable du shader maison » puis debranche.
+    grp.inputs["Transmission Weight"].default_value = BK_TRANSMISSION
+    grp.inputs["Roughness"].default_value = BK_ROUGHNESS
+    return copie
+
+
+def faire_bk(transm, base=(0.86, 0.87, 0.85, 1.0)):
+    """Le materiau BlenderKit a transmission donnee, base color NEUTRALISEE.
+
+    Sa Base Color d'origine est rose (0,80 / 0,672 / 0,655). A transmission
+    partielle cette teinte domine et la coque sort rosee opaque — la carte
+    disparait derriere une matiere qui a pourtant un tres beau grain. On isole
+    donc les deux effets : la teinte est ramenee au blanc casse du projet, seule
+    la transmission varie.
+    """
+    def candidat(m, nodes, links, bsdf):
+        copie = cand_blenderkit(m, nodes, links, bsdf)
+        grp = next(n for n in copie.node_tree.nodes if n.type == "GROUP")
+        grp.inputs["Transmission Weight"].default_value = transm
+        grp.inputs["Base Color"].default_value = base
+        return copie
+    return candidat
+
+
 CANDIDATS = {
     "gba": cand_gba,
+    "reddit": cand_reddit,
+    "bk": cand_blenderkit,
+    "bk70": faire_bk(0.70), "bk85": faire_bk(0.85), "bk95": faire_bk(0.95),
     # Melanges transmission / diffusion interne, du plus vitreux au plus laiteux.
     # VALEURS BAISSEES apres un premier balayage a 0,18-0,62 de diffusion, ou
     # les quatre candidats sortaient blancs des le second. Le subsurface de
@@ -251,7 +356,31 @@ CANDIDATS = {
 }
 
 
-def batir_scene(nom_mat, remplir, gap=None):
+# Eclairage INTERNE. Piste venue d'un fil r/blenderhelp sur exactement ce
+# probleme : la carte n'est pas seulement traversee par la lumiere du dehors,
+# elle est ECLAIREE DE L'INTERIEUR. Un intervenant y branche sa PCB sur un
+# shader emissif, un autre place des sources sous la coque. C'est ce qui fait
+# ressortir les composants a travers un depoli qui, autrement, les mange.
+# Positions RELEVEES sur la carte 4K, en coordonnees normalisees de la texture.
+# Les trois encodeurs y sont serigraphies ENC1, ENC2, ENC3.
+ENC_U = (0.076, 0.136, 0.200)
+ENC_V = 0.342
+ENC_RAYON_MM = 5.0          # percage de 10 mm, cote courante pour un potentiometre
+BOSSAGE_MM = 2.2            # matiere en saillie autour de chaque percage
+# Fenetres d'ecran, sur les deux nappes LCD du haut-gauche.
+FENETRES = (
+    (0.045, 0.055, 0.235, 0.115),
+    (0.045, 0.135, 0.235, 0.195),
+)
+
+BK_TRANSMISSION = 0.55
+BK_ROUGHNESS = 0.16
+SSS_MM = 0.06
+PCB_EMISSION = 0.35
+LUMIERES_INTERNES = 3
+
+
+def batir_scene(nom_mat, remplir, gap=None, emission=None, internes=None):
     """`gap` : distance entre la face INTERIEURE de la paroi et la carte.
 
     C'est le levier dominant du flou, et il l'emporte sur la rugosite. Une
@@ -301,6 +430,14 @@ def batir_scene(nom_mat, remplir, gap=None):
         t.image = bpy.data.images.load(chemin, check_existing=True)
         t.image.colorspace_settings.name = cs
         ntp.links.new(t.outputs["Color"], bp.inputs[socket])
+        if cle == "color":
+            em = PCB_EMISSION if emission is None else emission
+            if em > 0.0:
+                # La carte porte sa propre couleur en EMISSION, pas une teinte
+                # inventee : c'est ce qui la fait lire a travers le depoli sans
+                # la delaver, contrairement a une lumiere blanche posee derriere.
+                ntp.links.new(t.outputs["Color"], bp.inputs["Emission Color"])
+                bp.inputs["Emission Strength"].default_value = em
     pcb.data.materials.append(mp)
 
     # -- la plaque, avec son rebord ---------------------------------------
@@ -335,14 +472,125 @@ def batir_scene(nom_mat, remplir, gap=None):
     b.solver = "EXACT"
     bevel(lip, 0.0016, segments=4)
 
+    # ----- PERCAGES ET RELIEF -------------------------------------------
+    # Une plaque lisse ne montre pas ce qu'une matiere translucide fait la ou
+    # elle est PERCEE ou BOMBEE : c'est sur une arete de percage que l'epaisseur
+    # se lit, et sur un bossage que la lumiere glisse. Les positions viennent de
+    # la carte elle-meme — les trois encodeurs et les deux fenetres d'ecran sont
+    # aux coordonnees ou la texture les dessine, pas a des endroits inventes.
+    coupeurs = []
+
+    def _perce_rond(nom_p, u, v, rayon_mm):
+        bpy.ops.mesh.primitive_cylinder_add(
+            vertices=64, radius=rayon_mm / 1000.0, depth=PLAQUE_D * 4.0,
+            location=((u - 0.5) * PLAQUE_W, (0.5 - v) * PLAQUE_H, 0.0))
+        c = bpy.context.active_object
+        c.name = nom_p
+        c.hide_render = True
+        coupeurs.append(c)
+
+    def _perce_rect(nom_p, u0, v0, u1, v1):
+        c = boite(nom_p, ((u1 - u0) * PLAQUE_W, (v1 - v0) * PLAQUE_H,
+                          PLAQUE_D * 4.0),
+                  (((u0 + u1) / 2.0 - 0.5) * PLAQUE_W,
+                   (0.5 - (v0 + v1) / 2.0) * PLAQUE_H, 0.0))
+        c.hide_render = True
+        coupeurs.append(c)
+
+    for i, u in enumerate(ENC_U):
+        _perce_rond("CUT_ENC%d" % i, u, ENC_V, ENC_RAYON_MM)
+    for i, (u0, v0, u1, v1) in enumerate(FENETRES):
+        _perce_rect("CUT_ECR%d" % i, u0, v0, u1, v1)
+
+    # TROUS DE VIS, alignes sur ceux que la carte dessine. Antoine : « les trous
+    # pour les vis alignees avec la pcb ». Les positions viennent de
+    # pcb_screws.json, releve par Tuple_3D/pcb_screws.py sur la texture — pas de
+    # cote inventee, donc pas de decalage entre le percage de la coque et la
+    # couronne de la carte.
+    chemin_vis = os.path.normpath(os.path.join(
+        r"C:\dev\Tuple_3D", "05_textures", "pcb_screws.json"))
+    if os.path.exists(chemin_vis):
+        import json as _json
+        with open(chemin_vis, encoding="utf-8") as _f:
+            _v = _json.load(_f)
+        tw = _v["texture"][0]
+        for i, vis in enumerate(_v["vis"]):
+            # Le percage de la coque passe la VIS, pas la couronne : il est plus
+            # etroit que le disque dore de la carte, qui est la pastille de
+            # cuivre autour du trou.
+            rayon_mm = vis["diam_px"] / tw * PLAQUE_W * 1000.0 * 0.30
+            _perce_rond("CUT_VIS%d" % i, vis["u"], vis["v"], rayon_mm)
+        log("%d trous de vis perces, alignes sur la carte" % len(_v["vis"]))
+    else:
+        log("pcb_screws.json absent : aucun trou de vis")
+
+    for i, c in enumerate(coupeurs):
+        b = plaque.modifiers.new("perce_%d" % i, "BOOLEAN")
+        b.operation = "DIFFERENCE"
+        b.object = c
+        b.solver = "EXACT"
+
+    # BOSSAGES : de la matiere qui DEPASSE, pour voir la lumiere glisser dessus.
+    # Une facade reelle en a autour de chaque commande.
+    bossages = []
+    for i, u in enumerate(ENC_U):
+        bpy.ops.mesh.primitive_cylinder_add(
+            vertices=64, radius=(ENC_RAYON_MM + 4.5) / 1000.0,
+            depth=BOSSAGE_MM / 1000.0,
+            location=((u - 0.5) * PLAQUE_W, (0.5 - ENC_V) * PLAQUE_H,
+                      PLAQUE_D / 2.0 + BOSSAGE_MM / 2000.0))
+        bo = bpy.context.active_object
+        bo.name = "BOSS_ENC%d" % i
+        bevel(bo, 0.0012, segments=4)
+        bossages.append(bo)
+
+    # CORPS DE POTENTIOMETRE. Antoine : « c'est quoi le truc noir au fond ? ».
+    # C'etait le percage lui-meme : un trou traverse la coque et laisse voir
+    # l'interieur du boitier, vide et qu'aucune lumiere n'atteint. Sur un
+    # controleur reel le corps du potentiometre remplit le percage, et c'est lui
+    # qu'on voit — jamais un trou beant.
+    m_pot = bpy.data.materials.new("MAT_pot")
+    bp_pot = m_pot.node_tree.nodes.get("Principled BSDF")
+    bp_pot.inputs["Base Color"].default_value = (0.34, 0.345, 0.35, 1.0)
+    bp_pot.inputs["Roughness"].default_value = 0.32
+    bp_pot.inputs["Metallic"].default_value = 0.85
+    for i, u in enumerate(ENC_U):
+        bpy.ops.mesh.primitive_cylinder_add(
+            vertices=48, radius=(ENC_RAYON_MM - 1.2) / 1000.0,
+            depth=0.010,
+            location=((u - 0.5) * PLAQUE_W, (0.5 - ENC_V) * PLAQUE_H,
+                      PLAQUE_D / 2.0 - 0.005))
+        pot = bpy.context.active_object
+        pot.name = "POT_%d" % i
+        pot.data.materials.append(m_pot)
+
     m = bpy.data.materials.new(nom_mat)
     nt = m.node_tree
     bsdf = nt.nodes.get("Principled BSDF")
-    remplir(m, nt.nodes, nt.links, bsdf)
-    for ob in (plaque, lip):
+    # Un candidat peut soit REMPLIR le materiau qu'on lui donne, soit en RENDRE
+    # un tout fait — c'est le cas de celui qui charge un asset BlenderKit, dont
+    # on ne veut pas recopier les 60 noeuds a la main.
+    rendu = remplir(m, nt.nodes, nt.links, bsdf)
+    if isinstance(rendu, bpy.types.Material):
+        bpy.data.materials.remove(m)
+        m = rendu
+    for ob in [plaque, lip] + bossages:
         ob.data.materials.append(m)
 
     # -- fond, lumiere, camera --------------------------------------------
+    n_int = LUMIERES_INTERNES if internes is None else internes
+    for i in range(n_int):
+        d = bpy.data.lights.new("L_INT_%d" % i, type="POINT")
+        d.energy = 0.020
+        d.shadow_soft_size = 0.010
+        d.color = (1.0, 0.96, 0.90)
+        ob = bpy.data.objects.new("L_INT_%d" % i, d)
+        # Reparties sur la largeur, JUSTE sous la paroi avant : une source
+        # placee au fond du boitier n'eclairerait que le fond.
+        ob.location = (PLAQUE_W * (i / max(1, n_int - 1) - 0.5) * 0.62, 0.0,
+                       PLAQUE_D / 2.0 - WALL_EP - 0.004)
+        bpy.context.collection.objects.link(ob)
+
     bpy.ops.mesh.primitive_plane_add(size=2.0, location=(0.0, 0.0, -0.20))
     fond = bpy.context.active_object
     fond.name = "FOND"
@@ -447,6 +695,9 @@ def main():
     seul = None
     if "--only" in argv:
         seul = argv[argv.index("--only") + 1]
+    emission = None
+    if "--emission" in argv:
+        emission = float(argv[argv.index("--emission") + 1])
     gaps = None
     if "--gap" in argv:
         gaps = [float(v) / 1000.0 for v in argv[argv.index("--gap") + 1].split(",")]
@@ -463,7 +714,8 @@ def main():
     paires = ([(n, g) for n in noms for g in gaps] if gaps
               else [(n, None) for n in noms])
     for nom, gap in paires:
-        scene = batir_scene("MAT_lab_" + nom, CANDIDATS[nom], gap=gap)
+        scene = batir_scene("MAT_lab_" + nom, CANDIDATS[nom], gap=gap,
+                            emission=emission)
         scene.render.resolution_x = 900
         scene.render.resolution_y = 560
         scene.render.resolution_percentage = 100
