@@ -171,3 +171,21 @@ sans revue d'Antoine.
   le `-m` avant le `--`. Pas de trailer `Co-Authored-By`.
 - N'affirmer aucun résultat non exécuté. Un blocage rapporté vaut mieux qu'un
   succès prétendu.
+
+## Agent skills
+
+### Issue tracker
+
+Les issues vivent dans les GitHub Issues de `c0remusic/tuple-vst`, pilotées via la CLI `gh`. Voir `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Les cinq rôles canoniques, chaînes de label inchangées (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). Voir `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context : `CONTEXT.md` + `docs/adr/` à la racine du dépôt. Voir `docs/agents/domain.md`.
+
+### Wayfinder
+
+Chantier trop gros pour une session : `/wayfinder` charte la carte sur le tracker ci-dessus. Labels `wayfinder:map` et `wayfinder:{research,prototype,grilling,task}` créés. Sous-issues et blocage natif GitHub disponibles — pas de repli par convention de corps.
